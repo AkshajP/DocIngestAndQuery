@@ -74,16 +74,35 @@ original_stderr = sys.stderr
 sys.stdout = StreamCapture("STDOUT")
 sys.stderr = StreamCapture("STDERR")
 
+# Get storage configuration from environment variables
+storage_type = os.environ.get("STORAGE_TYPE", "local")
+s3_bucket = os.environ.get("S3_BUCKET", None)
+s3_prefix = os.environ.get("S3_PREFIX", "document_store")
+aws_region = os.environ.get("AWS_REGION", "us-east-1")
+
 # Initialize document uploader
 @st.cache_resource
 def get_uploader():
-    logger.info("Initializing DocumentUploader")
-    return DocumentUploader()
+    logger.info(f"Initializing DocumentUploader with storage type: {storage_type}")
+    
+    if storage_type.lower() == "s3":
+        if not s3_bucket:
+            logger.error("S3 bucket name is required when using S3 storage")
+            st.error("S3 bucket name is required when using S3 storage. Please set the S3_BUCKET environment variable.")
+            return None
+            
+        logger.info(f"Using S3 storage with bucket: {s3_bucket}, prefix: {s3_prefix}")
+        return DocumentUploader(
+            storage_type="s3",
+            s3_bucket=s3_bucket,
+            s3_prefix=s3_prefix,
+            aws_region=aws_region
+        )
+    else:
+        logger.info("Using local file storage")
+        return DocumentUploader()
 
 uploader = get_uploader()
-
-# Main title
-st.title("📄 Document Processor")
 
 # Function to restore original stdout/stderr when app is done
 def on_app_close():
@@ -92,6 +111,20 @@ def on_app_close():
 
 # Register the cleanup function
 st.cache_resource.clear()
+
+# Main title
+st.title("📄 Document Processor")
+
+# Display storage configuration
+with st.expander("Storage Configuration"):
+    st.write(f"**Storage Type:** {storage_type}")
+    
+    if storage_type.lower() == "s3":
+        st.write(f"**S3 Bucket:** {s3_bucket}")
+        st.write(f"**S3 Prefix:** {s3_prefix}")
+        st.write(f"**AWS Region:** {aws_region}")
+    else:
+        st.write("**Local Storage Directory:** document_store")
 
 # Sidebar - Document list and log display
 st.sidebar.title("Processed Documents")
@@ -113,6 +146,11 @@ with col2:
     if st.button("🔄 Refresh List"):
         logger.info("Refreshing document list")
         st.sidebar.success("List refreshed!")
+
+# Check if uploader was initialized successfully
+if uploader is None:
+    st.error("Failed to initialize document uploader. Please check your environment configuration.")
+    st.stop()
 
 # Get list of documents
 documents = uploader.list_documents()
@@ -195,7 +233,8 @@ if uploaded_files:
                 # Fix metadata to match what DocumentUploader expects
                 metadata = {
                     "original_filename": original_filename,
-                    "upload_source": "streamlit_app"
+                    "upload_source": "streamlit_app",
+                    "storage_type": storage_type
                 }
                 
                 # Create a consistent document_id based on original filename
@@ -210,6 +249,7 @@ if uploaded_files:
                 print(f"  Original filename: {original_filename}")
                 print(f"  Document ID: {doc_id}")
                 print(f"  Temp path: {temp_path}")
+                print(f"  Storage type: {storage_type}")
                 
                 # Process document with preserved filename
                 logger.info(f"Starting document processing for {original_filename}")
@@ -241,6 +281,7 @@ if uploaded_files:
                             st.write(f"**Processing time:** {result['processing_time']:.2f} seconds")
                             st.write(f"**Chunks:** {result['chunks_count']}")
                             st.write(f"**RAPTOR levels:** {', '.join(map(str, result['raptor_levels']))}")
+                            st.write(f"**Storage type:** {storage_type}")
                     else:
                         error_msg = f"❌ Error processing {file.name}: {result.get('error', 'Unknown error')}"
                         st.error(error_msg)
@@ -297,6 +338,11 @@ if documents:
             with col3:
                 st.metric("Status", metadata.get('status', 'Unknown'))
             
+            # Storage info
+            st.write(f"**Storage Type:** {storage_type}")
+            if storage_type.lower() == "s3":
+                st.write(f"**S3 Location:** s3://{s3_bucket}/{s3_prefix}/{selected_doc}")
+                
             # Content types
             if "content_types" in metadata and metadata["content_types"]:
                 st.subheader("Content Types")

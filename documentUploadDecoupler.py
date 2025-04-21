@@ -11,6 +11,8 @@ import tempfile
 import shutil
 from datetime import datetime
 import re
+import boto3
+from botocore.exceptions import ClientError
 
 # Import components from your existing codebase
 from mineru_ingester import ingest_pdf
@@ -23,6 +25,220 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('document_uploader')
+
+class StorageAdapter:
+    """Base class for storage operations, abstracting file I/O."""
+    
+    def write_file(self, content, path):
+        """Write content to a file path."""
+        pass
+        
+    def read_file(self, path):
+        """Read content from a file path."""
+        pass
+        
+    def delete_file(self, path):
+        """Delete a file at the given path."""
+        pass
+        
+    def file_exists(self, path):
+        """Check if a file exists at the given path."""
+        pass
+        
+    def create_directory(self, path):
+        """Create a directory at the given path."""
+        pass
+        
+    def list_files(self, directory):
+        """List files in a directory."""
+        pass
+        
+    def delete_directory(self, path):
+        """Delete a directory and its contents."""
+        pass
+    
+class LocalStorageAdapter(StorageAdapter):
+    """Local filesystem implementation of StorageAdapter."""
+    
+    def write_file(self, content, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if isinstance(content, str):
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        elif isinstance(content, bytes):
+            with open(path, 'wb') as f:
+                f.write(content)
+        else:
+            raise TypeError("Content must be string or bytes")
+    
+    def read_file(self, path):
+        if not os.path.exists(path):
+            return None
+        
+        if path.endswith('.pkl'):
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        else:
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+    
+    def delete_file(self, path):
+        if os.path.exists(path):
+            os.remove(path)
+    
+    def file_exists(self, path):
+        return os.path.exists(path)
+    
+    def create_directory(self, path):
+        os.makedirs(path, exist_ok=True)
+    
+    def list_files(self, directory):
+        if os.path.exists(directory):
+            return os.listdir(directory)
+        return []
+    
+    def delete_directory(self, path):
+        if os.path.exists(path):
+            shutil.rmtree(path)
+            
+class S3StorageAdapter(StorageAdapter):
+    """S3 implementation of StorageAdapter."""
+    
+    def __init__(self, bucket_name, prefix="", region="us-east-1"):
+        self.bucket = bucket_name
+        self.prefix = prefix
+        self.s3_client = boto3.client('s3', region_name=region)
+    
+    def _get_full_path(self, path):
+        """Convert local path to S3 key."""
+        # Remove leading slash if present
+        if path.startswith('/'):
+            path = path[1:]
+        # Add prefix if it exists
+        if self.prefix:
+            return f"{self.prefix.rstrip('/')}/{path}"
+        return path
+    
+    def write_file(self, content, path):
+        s3_key = self._get_full_path(path)
+        try:
+            if isinstance(content, str):
+                self.s3_client.put_object(
+                    Bucket=self.bucket,
+                    Key=s3_key,
+                    Body=content.encode('utf-8')
+                )
+            elif isinstance(content, bytes):
+                self.s3_client.put_object(
+                    Bucket=self.bucket,
+                    Key=s3_key,
+                    Body=content
+                )
+            else:
+                raise TypeError("Content must be string or bytes")
+        except ClientError as e:
+            logger.error(f"Error writing to S3: {str(e)}")
+            raise
+    
+    def read_file(self, path):
+        s3_key = self._get_full_path(path)
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket, Key=s3_key)
+            content = response['Body'].read()
+            
+            if path.endswith('.pkl'):
+                return pickle.loads(content)
+            else:
+                return content.decode('utf-8')
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NoSuchKey':
+                return None
+            logger.error(f"Error reading from S3: {str(e)}")
+            raise
+    
+    def delete_file(self, path):
+        s3_key = self._get_full_path(path)
+        try:
+            self.s3_client.delete_object(Bucket=self.bucket, Key=s3_key)
+        except ClientError as e:
+            logger.error(f"Error deleting from S3: {str(e)}")
+            raise
+    
+    def file_exists(self, path):
+        s3_key = self._get_full_path(path)
+        try:
+            self.s3_client.head_object(Bucket=self.bucket, Key=s3_key)
+            return True
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                return False
+            logger.error(f"Error checking file in S3: {str(e)}")
+            raise
+    
+    def create_directory(self, path):
+        # S3 doesn't need directory creation, but we can add an empty marker
+        s3_key = self._get_full_path(path.rstrip('/') + '/.marker')
+        try:
+            self.s3_client.put_object(Bucket=self.bucket, Key=s3_key, Body=b'')
+        except ClientError as e:
+            logger.error(f"Error creating S3 directory marker: {str(e)}")
+            raise
+    
+    def list_files(self, directory):
+        # Ensure directory ends with a slash
+        if not directory.endswith('/'):
+            directory += '/'
+        
+        s3_prefix = self._get_full_path(directory)
+        try:
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket,
+                Prefix=s3_prefix,
+                Delimiter='/'
+            )
+            
+            files = []
+            
+            # Get files (Contents)
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    # Extract just the filename from the full path
+                    key = obj['Key']
+                    file_name = key.split('/')[-1]
+                    if file_name and file_name != '.marker':
+                        files.append(file_name)
+            
+            return files
+        except ClientError as e:
+            logger.error(f"Error listing S3 files: {str(e)}")
+            raise
+    
+    def delete_directory(self, path):
+        s3_prefix = self._get_full_path(path.rstrip('/') + '/')
+        try:
+            # S3 doesn't have directories, so we delete all objects with the prefix
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.bucket, Prefix=s3_prefix)
+            
+            delete_list = []
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        delete_list.append({'Key': obj['Key']})
+            
+            if delete_list:
+                # Delete in batches of 1000 (S3 limit)
+                for i in range(0, len(delete_list), 1000):
+                    batch = delete_list[i:i+1000]
+                    self.s3_client.delete_objects(
+                        Bucket=self.bucket,
+                        Delete={'Objects': batch}
+                    )
+                    
+        except ClientError as e:
+            logger.error(f"Error deleting S3 directory: {str(e)}")
+            raise
+
 
 class DocumentUploader:
     """
@@ -39,13 +255,17 @@ class DocumentUploader:
         language: str = 'en',
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
-        max_tree_levels: int = 3
+        max_tree_levels: int = 3,
+        storage_type: str = "local",  # Options: "local" or "s3"
+        s3_bucket: str = None,
+        s3_prefix: str = "",
+        aws_region: str = "us-east-1"
     ):
         """
         Initialize the document uploader.
         
         Args:
-            storage_dir: Base directory for storing processed documents
+            storage_dir: Base directory for storing processed documents (local storage only)
             ollama_base_url: URL for Ollama API
             ollama_model: Model for LLM operations
             ollama_embed_model: Model for embeddings
@@ -53,6 +273,10 @@ class DocumentUploader:
             chunk_size: Size of text chunks
             chunk_overlap: Overlap between text chunks
             max_tree_levels: Maximum levels for RAPTOR tree
+            storage_type: Storage type ("local" or "s3")
+            s3_bucket: S3 bucket name (required if storage_type is "s3")
+            s3_prefix: Prefix for S3 keys (like a directory)
+            aws_region: AWS region for S3 bucket
         """
         self.storage_dir = storage_dir
         self.ollama_base_url = ollama_base_url
@@ -62,15 +286,27 @@ class DocumentUploader:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.max_tree_levels = max_tree_levels
+        self.storage_type = storage_type
         
-        # Create main storage directory if it doesn't exist
-        os.makedirs(storage_dir, exist_ok=True)
+        # Initialize storage adapter based on configuration
+        if storage_type.lower() == "s3":
+            if s3_bucket is None:
+                raise ValueError("S3 bucket name is required when using S3 storage")
+            logger.info(f"Initializing S3 storage adapter with bucket {s3_bucket}")
+            self.storage = S3StorageAdapter(s3_bucket, prefix=s3_prefix, region=aws_region)
+            self.registry_path = f"{s3_prefix.rstrip('/')}/document_registry.json"
+        else:
+            logger.info(f"Initializing local storage adapter with directory {storage_dir}")
+            self.storage = LocalStorageAdapter()
+            self.storage.create_directory(storage_dir)
+            self.registry_path = os.path.join(storage_dir, "document_registry.json")
         
         # Create registry file if it doesn't exist
-        self.registry_path = os.path.join(storage_dir, "document_registry.json")
-        if not os.path.exists(self.registry_path):
-            with open(self.registry_path, "w") as f:
-                json.dump({"documents": {}, "last_updated": datetime.now().isoformat()}, f, indent=2)
+        if not self.storage.file_exists(self.registry_path):
+            self.storage.write_file(
+                json.dumps({"documents": {}, "last_updated": datetime.now().isoformat()}, indent=2),
+                self.registry_path
+            )
         
         # Initialize embedding model
         self.embeddings = OllamaEmbeddings(
@@ -100,20 +336,20 @@ class DocumentUploader:
             document_id = f"doc_{uuid.uuid4().hex[:10]}_{os.path.basename(file_path)}"
         
         # Create document directory structure
-        doc_dir = os.path.join(self.storage_dir, document_id)
+        doc_dir = os.path.join(self.storage_dir, document_id) if self.storage_type == "local" else f"{document_id}"
         
         # Check if document already exists
-        if os.path.exists(doc_dir):
+        if self.storage.file_exists(doc_dir):
             logger.warning(f"Document {document_id} already exists. Using a new ID.")
             document_id = f"doc_{uuid.uuid4().hex[:10]}_{os.path.basename(file_path)}"
-            doc_dir = os.path.join(self.storage_dir, document_id)
+            doc_dir = os.path.join(self.storage_dir, document_id) if self.storage_type == "local" else f"{document_id}"
         
         # Create directory structure
-        os.makedirs(doc_dir, exist_ok=True)
-        os.makedirs(os.path.join(doc_dir, "chunks"), exist_ok=True)
-        os.makedirs(os.path.join(doc_dir, "embeddings"), exist_ok=True)
-        os.makedirs(os.path.join(doc_dir, "raptor_tree"), exist_ok=True)
-        os.makedirs(os.path.join(doc_dir, "mineru_output"), exist_ok=True)
+        self.storage.create_directory(doc_dir)
+        self.storage.create_directory(os.path.join(doc_dir, "chunks"))
+        self.storage.create_directory(os.path.join(doc_dir, "embeddings"))
+        self.storage.create_directory(os.path.join(doc_dir, "raptor_tree"))
+        self.storage.create_directory(os.path.join(doc_dir, "mineru_output"))
         
         # Process document based on type
         if file_path.lower().endswith('.pdf'):
@@ -152,8 +388,7 @@ class DocumentUploader:
                 
                 # Save document metadata
                 metadata_path = os.path.join(doc_dir, "metadata.json")
-                with open(metadata_path, "w") as f:
-                    json.dump(doc_metadata, f, indent=2)
+                self.storage.write_file(json.dumps(doc_metadata, indent=2), metadata_path)
                 
                 # Update document registry
                 self._update_registry(document_id, doc_metadata)
@@ -183,8 +418,7 @@ class DocumentUploader:
                 
                 # Save failure metadata
                 metadata_path = os.path.join(doc_dir, "metadata.json")
-                with open(metadata_path, "w") as f:
-                    json.dump(failure_metadata, f, indent=2)
+                self.storage.write_file(json.dumps(failure_metadata, indent=2), metadata_path)
                 
                 # Update document registry
                 self._update_registry(document_id, failure_metadata)
@@ -223,18 +457,16 @@ class DocumentUploader:
             # Save content_list to output directory
             mineru_dir = os.path.join(doc_dir, "mineru_output")
             content_list_path = os.path.join(mineru_dir, "content_list.json")
-            with open(content_list_path, "w", encoding="utf-8") as f:
-                json.dump(mineru_output["content_list"], f, indent=2)
+            self.storage.write_file(json.dumps(mineru_output["content_list"], indent=2), content_list_path)
             
             # Save images if present
             if "images" in mineru_output and mineru_output["images"]:
                 images_dir = os.path.join(mineru_dir, "images")
-                os.makedirs(images_dir, exist_ok=True)
+                self.storage.create_directory(images_dir)
                 
                 for img_name, img_data in mineru_output["images"].items():
                     img_path = os.path.join(images_dir, img_name)
-                    with open(img_path, "wb") as f:
-                        f.write(img_data)
+                    self.storage.write_file(img_data, img_path)  # Binary data
             
             logger.info(f"MinerU extraction complete with {len(mineru_output['content_list'])} content items")
             return mineru_output
@@ -272,13 +504,11 @@ class DocumentUploader:
         # Save individual chunks to files
         for chunk in all_chunks:
             chunk_path = os.path.join(chunks_dir, f"{chunk['id']}.json")
-            with open(chunk_path, "w", encoding="utf-8") as f:
-                json.dump(chunk, f, indent=2)
+            self.storage.write_file(json.dumps(chunk, indent=2), chunk_path)
         
         # Save all chunks as a single file for convenience
         all_chunks_path = os.path.join(doc_dir, "all_chunks.json")
-        with open(all_chunks_path, "w", encoding="utf-8") as f:
-            json.dump(all_chunks, f, indent=2)
+        self.storage.write_file(json.dumps(all_chunks, indent=2), all_chunks_path)
         
         logger.info(f"Created {len(all_chunks)} optimized chunks")
         return all_chunks
@@ -319,13 +549,11 @@ class DocumentUploader:
                 
                 # Save individual embedding file
                 emb_path = os.path.join(embeddings_dir, f"{chunk_id}.pkl")
-                with open(emb_path, "wb") as f:
-                    pickle.dump(emb, f)
+                self.storage.write_file(pickle.dumps(emb), emb_path)
         
         # Save all embeddings as a single file
         all_embeddings_path = os.path.join(doc_dir, "all_embeddings.pkl")
-        with open(all_embeddings_path, "wb") as f:
-            pickle.dump(all_embeddings, f)
+        self.storage.write_file(pickle.dumps(all_embeddings), all_embeddings_path)
         
         logger.info(f"Generated embeddings for {len(all_embeddings)} chunks")
         return all_embeddings
@@ -371,7 +599,7 @@ class DocumentUploader:
             
             # Store the layer 0 dataframe
             layer0_path = os.path.join(raptor_dir, "layer0_clusters.pkl")
-            df_layer0.to_pickle(layer0_path)
+            self.storage.write_file(pickle.dumps(df_layer0), layer0_path)
             
             # Initialize tree structure
             raptor_tree = {}
@@ -393,10 +621,10 @@ class DocumentUploader:
                     
                     # Save the clusters and summaries for this layer
                     clusters_path = os.path.join(raptor_dir, f"layer{current_level}_clusters.pkl")
-                    df_clusters.to_pickle(clusters_path)
+                    self.storage.write_file(pickle.dumps(df_clusters), clusters_path)
                     
                     summary_path = os.path.join(raptor_dir, f"layer{current_level}_summaries.pkl")
-                    df_summary.to_pickle(summary_path)
+                    self.storage.write_file(pickle.dumps(df_summary), summary_path)
                     
                     # Also save as JSON for easier inspection
                     clusters_json_path = os.path.join(raptor_dir, f"layer{current_level}_clusters.json")
@@ -413,11 +641,8 @@ class DocumentUploader:
 
                     summary_json = df_summary.to_dict(orient="records")
                     
-                    with open(clusters_json_path, "w") as f:
-                        json.dump(clusters_json, f, indent=2)
-                    
-                    with open(summary_json_path, "w") as f:
-                        json.dump(summary_json, f, indent=2)
+                    self.storage.write_file(json.dumps(clusters_json, indent=2), clusters_json_path)
+                    self.storage.write_file(json.dumps(summary_json, indent=2), summary_json_path)
                     
                     # Store in tree structure
                     raptor_tree[current_level] = {
@@ -443,8 +668,7 @@ class DocumentUploader:
             
             # Save tree structure
             tree_structure_path = os.path.join(doc_dir, "tree_structure.json")
-            with open(tree_structure_path, "w") as f:
-                json.dump(tree_structure, f, indent=2)
+            self.storage.write_file(json.dumps(tree_structure, indent=2), tree_structure_path)
             
             logger.info(f"Successfully built RAPTOR tree with {len(raptor_tree)} levels")
             return raptor_tree
@@ -584,8 +808,8 @@ class DocumentUploader:
             metadata: Document metadata
         """
         # Load current registry
-        with open(self.registry_path, "r") as f:
-            registry = json.load(f)
+        registry_content = self.storage.read_file(self.registry_path)
+        registry = json.loads(registry_content) if registry_content else {"documents": {}, "last_updated": datetime.now().isoformat()}
         
         # Update registry with new document
         registry["documents"][document_id] = {
@@ -602,8 +826,7 @@ class DocumentUploader:
         registry["last_updated"] = datetime.now().isoformat()
         
         # Save updated registry
-        with open(self.registry_path, "w") as f:
-            json.dump(registry, f, indent=2)
+        self.storage.write_file(json.dumps(registry, indent=2), self.registry_path)
     
     def list_documents(self) -> List[Dict[str, Any]]:
         """
@@ -613,8 +836,8 @@ class DocumentUploader:
             List of document metadata
         """
         # Load registry
-        with open(self.registry_path, "r") as f:
-            registry = json.load(f)
+        registry_content = self.storage.read_file(self.registry_path)
+        registry = json.loads(registry_content) if registry_content else {"documents": {}, "last_updated": datetime.now().isoformat()}
         
         # Return list of documents
         return list(registry["documents"].values())
@@ -629,11 +852,12 @@ class DocumentUploader:
         Returns:
             Document metadata or None if document not found
         """
-        metadata_path = os.path.join(self.storage_dir, document_id, "metadata.json")
+        doc_dir = os.path.join(self.storage_dir, document_id) if self.storage_type == "local" else f"{document_id}"
+        metadata_path = os.path.join(doc_dir, "metadata.json")
         
-        if os.path.exists(metadata_path):
-            with open(metadata_path, "r") as f:
-                return json.load(f)
+        metadata_content = self.storage.read_file(metadata_path)
+        if metadata_content:
+            return json.loads(metadata_content)
         
         return None
     
@@ -647,26 +871,25 @@ class DocumentUploader:
         Returns:
             True if successful, False otherwise
         """
-        doc_dir = os.path.join(self.storage_dir, document_id)
+        doc_dir = os.path.join(self.storage_dir, document_id) if self.storage_type == "local" else f"{document_id}"
         
-        if not os.path.exists(doc_dir):
+        if not self.storage.file_exists(doc_dir):
             logger.warning(f"Document {document_id} not found")
             return False
         
         try:
             # Remove from registry first
-            with open(self.registry_path, "r") as f:
-                registry = json.load(f)
+            registry_content = self.storage.read_file(self.registry_path)
+            registry = json.loads(registry_content) if registry_content else {"documents": {}, "last_updated": datetime.now().isoformat()}
             
             if document_id in registry["documents"]:
                 del registry["documents"][document_id]
                 registry["last_updated"] = datetime.now().isoformat()
                 
-                with open(self.registry_path, "w") as f:
-                    json.dump(registry, f, indent=2)
+                self.storage.write_file(json.dumps(registry, indent=2), self.registry_path)
             
             # Delete document directory
-            shutil.rmtree(doc_dir)
+            self.storage.delete_directory(doc_dir)
             
             logger.info(f"Document {document_id} deleted successfully")
             return True
@@ -674,7 +897,6 @@ class DocumentUploader:
         except Exception as e:
             logger.error(f"Error deleting document {document_id}: {str(e)}")
             return False
-
 
 class Chunker:
     """
@@ -1041,11 +1263,42 @@ def run_uploader_interface():
     print("- 'list': List all processed documents")
     print("- 'info <document_id>': Show detailed information about a document")
     print("- 'delete <document_id>': Delete a document")
+    print("- 'config': Show current storage configuration")
     print("- 'exit': Exit the interface")
     print("============================")
     
-    # Initialize the uploader
-    uploader = DocumentUploader()
+    # Get storage configuration from environment variables
+    storage_type = os.environ.get("STORAGE_TYPE", "local")
+    s3_bucket = os.environ.get("S3_BUCKET", None)
+    s3_prefix = os.environ.get("S3_PREFIX", "")
+    aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    
+    # Print storage configuration
+    print("\n🔧 Storage Configuration:")
+    print(f"- Storage Type: {storage_type}")
+    if storage_type.lower() == "s3":
+        print(f"- S3 Bucket: {s3_bucket}")
+        print(f"- S3 Prefix: {s3_prefix}")
+        print(f"- AWS Region: {aws_region}")
+    else:
+        print(f"- Local Storage Directory: document_store")
+    print()
+    
+    # Initialize the uploader with the appropriate storage config
+    if storage_type.lower() == "s3":
+        if not s3_bucket:
+            print("❌ S3 bucket name is required when using S3 storage.")
+            print("Please set the S3_BUCKET environment variable.")
+            return
+        
+        uploader = DocumentUploader(
+            storage_type="s3",
+            s3_bucket=s3_bucket,
+            s3_prefix=s3_prefix,
+            aws_region=aws_region
+        )
+    else:
+        uploader = DocumentUploader()
     
     # Main interaction loop
     while True:
@@ -1054,6 +1307,16 @@ def run_uploader_interface():
         if user_input.lower() == 'exit':
             print("Exiting document uploader interface...")
             break
+        
+        elif user_input.lower() == 'config':
+            print("\n🔧 Current Storage Configuration:")
+            print(f"- Storage Type: {uploader.storage_type}")
+            if uploader.storage_type.lower() == "s3":
+                print(f"- S3 Bucket: {s3_bucket}")
+                print(f"- S3 Prefix: {s3_prefix}")
+                print(f"- AWS Region: {aws_region}")
+            else:
+                print(f"- Local Storage Directory: {uploader.storage_dir}")
         
         elif user_input.lower().startswith('upload '):
             file_path = user_input[7:].strip()
@@ -1144,8 +1407,7 @@ def run_uploader_interface():
                 print("Deletion cancelled")
         
         else:
-            print("❓ Unknown command. Type 'upload <file_path>', 'list', 'info <document_id>', 'delete <document_id>', or 'exit'")
-
+            print("❓ Unknown command. Type 'upload <file_path>', 'list', 'info <document_id>', 'delete <document_id>', 'config', or 'exit'")
 
 if __name__ == "__main__":
     run_uploader_interface()
