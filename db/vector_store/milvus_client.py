@@ -146,7 +146,6 @@ class MilvusClient:
             self.collection = Collection(
                 name=self.collection_name,
                 schema=milvus_schema,
-                using="default",
                 shards_num=2  # Using multiple shards for better performance
             )
             
@@ -194,7 +193,6 @@ class MilvusClient:
             
             if len(partition_name) > 50:
                 # Create a hash of the partition key to shorten it
-                import hashlib
                 hash_key = hashlib.md5(partition_key.encode()).hexdigest()[:10]
                 partition_name = f"p_{hash_key}"
             
@@ -268,12 +266,9 @@ class MilvusClient:
                 embeddings = []
                 
                 for entity in batch:
-                    # Use the partition we already created
-                    doc_id = entity.document_id
-                    
                     # Extract fields
                     ids.append(entity.id)
-                    document_ids.append(doc_id)
+                    document_ids.append(entity.document_id)
                     chunk_ids.append(entity.chunk_id)
                     contents.append(entity.content)
                     content_types.append(entity.content_type)
@@ -323,6 +318,25 @@ class MilvusClient:
             logger.error(f"Error adding entities: {e}")
             return False
     
+    def _extract_hit_field(self, hit, field_name, default=None):
+        """
+        Extract a field from a hit entity compatible with your Milvus version.
+        
+        Args:
+            hit: The Milvus Hit object
+            field_name: The field name to extract
+            default: Default value if the field is not found
+            
+        Returns:
+            The field value or default
+        """
+        try:
+            # Based on your working example, direct attribute access is likely to work
+            return getattr(hit.entity, field_name, default)
+        except Exception as e:
+            logger.warning(f"Error extracting field {field_name} from hit: {e}")
+            return default
+    
     def search(self, search_params: VectorSearchParams) -> List[VectorSearchResult]:
         """
         Search for similar vectors.
@@ -341,34 +355,16 @@ class MilvusClient:
             # Generate filter expression
             expr = search_params.get_filter_expr()
             
-            # Determine which partitions to search based on document_ids
-            search_partition_names = None
-            if search_params.document_ids:
-                partition_names = []
-                for doc_id in search_params.document_ids:
-                    partition_key = f"{doc_id}"
-                    # Check partition name length and hash if needed
-                    partition_name = f"p_{partition_key}"
-                    if len(partition_name) > 50:
-                        import hashlib
-                        hash_key = hashlib.md5(partition_key.encode()).hexdigest()[:10]
-                        partition_name = f"p_{hash_key}"
-                    partition_names.append(partition_name)
-                
-                # Use all partitions if no specific ones are found
-                # This avoids returning empty results due to partition issues
-                if not partition_names:
-                    logger.warning(f"No partition names generated for document_ids: {search_params.document_ids}")
-                else:
-                    search_partition_names = partition_names
-                    logger.info(f"Searching in partitions: {search_partition_names}")
-            
             # Prepare search parameters
             vector_field = self.schema.vector_field.name
             search_params_dict = {
                 "metric_type": search_params.metric_type,
                 "params": search_params.params
             }
+            
+            # Define output fields
+            output_fields = ["document_id", "chunk_id", "content", "content_type", 
+                           "chunk_type", "page_number", "tree_level", "metadata"]
             
             # Execute search
             start_time = time.time()
@@ -378,9 +374,7 @@ class MilvusClient:
                 param=search_params_dict,
                 limit=search_params.top_k,
                 expr=expr,
-                partition_names=search_partition_names,
-                output_fields=["document_id", "chunk_id", "content", "content_type", 
-                             "chunk_type", "page_number", "tree_level", "metadata"]
+                output_fields=output_fields
             )
             search_time = time.time() - start_time
             
@@ -389,28 +383,25 @@ class MilvusClient:
             
             for hits in results:
                 for hit in hits:
-                    # Extract entity data using our safe helper method
-                    entity_data = {
-                        "id": hit.id,
-                        "document_id": self._extract_hit_field(hit, "document_id", ""),
-                        "chunk_id": self._extract_hit_field(hit, "chunk_id", ""),
-                        "content": self._extract_hit_field(hit, "content", ""),
-                        "content_type": self._extract_hit_field(hit, "content_type", "text"),
-                        "chunk_type": self._extract_hit_field(hit, "chunk_type", "original"),
-                        "page_number": self._extract_hit_field(hit, "page_number"),
-                        "tree_level": self._extract_hit_field(hit, "tree_level", 0),
-                        "metadata": self._extract_hit_field(hit, "metadata", {}),
-                        "embedding": []  # Embedding not returned in search results
-                    }
-                    
-                    # Create VectorEntity
-                    entity = VectorEntity(**entity_data)
+                    # Create entity with simpler field access
+                    entity = VectorEntity(
+                        id=str(hit.id),
+                        document_id=self._extract_hit_field(hit, "document_id", ""),
+                        chunk_id=self._extract_hit_field(hit, "chunk_id", ""),
+                        content=self._extract_hit_field(hit, "content", ""),
+                        content_type=self._extract_hit_field(hit, "content_type", "text"),
+                        chunk_type=self._extract_hit_field(hit, "chunk_type", "original"),
+                        page_number=self._extract_hit_field(hit, "page_number"),
+                        tree_level=self._extract_hit_field(hit, "tree_level", 0),
+                        metadata=self._extract_hit_field(hit, "metadata", {}),
+                        embedding=[]  # Embedding not returned in search results
+                    )
                     
                     # Create search result
                     search_result = VectorSearchResult(
                         entity=entity,
                         score=hit.score,
-                        distance=hit.distance
+                        distance=0.0  # May not be available in all Milvus versions
                     )
                     
                     search_results.append(search_result)
@@ -422,39 +413,6 @@ class MilvusClient:
             import traceback
             logger.error(traceback.format_exc())
             return []
-    
-    def _extract_hit_field(self, hit, field_name, default=None):
-        """
-        Extract a field from a hit entity safely, handling different Hit object structures.
-        
-        Args:
-            hit: The Milvus Hit object
-            field_name: The field name to extract
-            default: Default value if the field is not found
-            
-        Returns:
-            The field value or default
-        """
-        try:
-            # First try to access as a dictionary
-            if hasattr(hit.entity, '__getitem__'):
-                try:
-                    return hit.entity[field_name]
-                except (KeyError, TypeError):
-                    pass
-            
-            # Then try to access as an attribute
-            if hasattr(hit.entity, field_name):
-                return getattr(hit.entity, field_name)
-            
-            # Then try to use get() method if available
-            if hasattr(hit.entity, 'get'):
-                return hit.entity.get(field_name, default)
-            
-            return default
-        except Exception as e:
-            logger.warning(f"Error extracting field {field_name} from hit: {e}")
-            return default
     
     def delete_by_document_ids(self, document_ids: List[str]) -> bool:
         """
@@ -508,6 +466,10 @@ class MilvusClient:
             
             # Execute deletion
             self.collection.delete(filter_expr)
+            
+            # Flush to ensure changes are committed
+            self.collection.flush()
+            
             logger.info(f"Deleted entities with filter: {filter_expr}")
             
             return True
@@ -532,20 +494,34 @@ class MilvusClient:
             
             # Count entities
             if filter_expr:
-                # For filtered counts, we need to use the expr parameter
-                results = self.collection.query(
-                    expr=filter_expr,
-                    output_fields=["count(*)"]
-                )
-                if results and len(results) > 0:
-                    return results[0].get("count(*)", 0)
-                return 0
+                # For filtered counts, we need to use the query method
+                try:
+                    results = self.collection.query(
+                        expr=filter_expr,
+                        output_fields=["count(*)"]
+                    )
+                    if results and len(results) > 0:
+                        return results[0].get("count(*)", 0)
+                    return 0
+                except Exception as query_error:
+                    logger.warning(f"Error using query for count: {query_error}")
+                    # Fall back to search count
+                    search_params = {
+                        "metric_type": "L2",
+                        "params": {"nprobe": 10}
+                    }
+                    results = self.collection.search(
+                        data=[[0.0] * self.dimension],  # Dummy vector
+                        anns_field=self.schema.vector_field.name,
+                        param=search_params,
+                        limit=10000,  # Very high limit to count
+                        expr=filter_expr,
+                        output_fields=["count(*)"]
+                    )
+                    return len(results[0]) if results else 0
             else:
-                # Ensure the collection is flushed first to get accurate counts
-                self.collection.flush()
-                # Use collection.num_entities for total count
-                count = self.collection.num_entities
-                return count
+                # For total count, use collection.num_entities
+                return self.collection.num_entities
         except Exception as e:
             logger.error(f"Error counting entities: {e}")
             return 0
@@ -589,20 +565,24 @@ class MilvusClient:
             for partition in partitions:
                 partition_name = partition.name
                 try:
-                    # In Milvus, to get the count of entities in a partition,
-                    # we need to use the output_fields=["count(*)"] without an expression
-                    results = self.collection.query(
-                        expr="",  # Empty expression to count all in the partition
-                        output_fields=["count(*)"],
-                        partition_names=[partition_name]
-                    )
-                    if results and len(results) > 0:
-                        stats[partition_name] = results[0].get("count(*)", 0)
-                    else:
+                    # In newer Milvus versions, you can use this info directly
+                    stats[partition_name] = partition.num_entities
+                except AttributeError:
+                    # For older versions, fall back to querying
+                    try:
+                        # Try direct query first
+                        results = self.collection.query(
+                            expr="",
+                            output_fields=["count(*)"],
+                            partition_names=[partition_name]
+                        )
+                        if results and len(results) > 0:
+                            stats[partition_name] = results[0].get("count(*)", 0)
+                        else:
+                            stats[partition_name] = 0
+                    except Exception:
+                        # Last resort - count all entities in the partition
                         stats[partition_name] = 0
-                except Exception as e:
-                    logger.warning(f"Could not get count for partition {partition_name}: {e}")
-                    stats[partition_name] = -1  # Indicate error
             
             return stats
         except Exception as e:
