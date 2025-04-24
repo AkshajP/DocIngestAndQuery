@@ -105,7 +105,7 @@ class EmbeddingGenerator:
 
 
 class MilvusVectorStore:
-    """Handles interactions with Milvus vector database"""
+    """Handles interactions with Milvus vector database, now with bbox support"""
     
     def __init__(
         self,
@@ -139,7 +139,7 @@ class MilvusVectorStore:
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=100),
             FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="metadata", dtype=DataType.JSON),
+            FieldSchema(name="metadata", dtype=DataType.JSON),  # Metadata includes bbox info
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.dim)
         ]
         
@@ -183,7 +183,10 @@ class MilvusVectorStore:
             doc_id = hashlib.md5(doc.page_content.encode()).hexdigest()
             ids.append(doc_id)
             contents.append(doc.page_content)
-            metadatas.append(doc.metadata)
+            
+            # Ensure original_boxes is preserved in metadata if it exists
+            metadata = doc.metadata.copy() if doc.metadata else {}
+            metadatas.append(metadata)
         
         batch_size = 1000  # Adjust based on your memory constraints
         for i in range(0, len(ids), batch_size):
@@ -231,13 +234,34 @@ class MilvusVectorStore:
             output_fields=["content", "metadata"]
         )
 
-        # Format results
+        # Format results - fix the way we access entity attributes
         documents = []
         for hits in results:
             for hit in hits:
+                # Handle different ways to access entity data based on SDK version
+                try:
+                    # Method 1: Try accessing as properties first (newer SDK)
+                    content = hit.entity.content
+                    metadata = hit.entity.metadata
+                except (AttributeError, TypeError):
+                    try:
+                        # Method 2: Try dictionary-style access (older SDK)
+                        content = hit.entity["content"]
+                        metadata = hit.entity["metadata"]
+                    except (TypeError, KeyError):
+                        try:
+                            # Method 3: Fallback to get method with proper signature
+                            content = hit.entity.get("content")
+                            metadata = hit.entity.get("metadata")
+                        except Exception as e:
+                            # Last resort: log error and use empty values
+                            print(f"Error accessing Milvus result: {str(e)}")
+                            content = ""
+                            metadata = {}
+
                 documents.append({
-                    "content": hit.entity.get("content"),
-                    "metadata": hit.entity.get("metadata"),
+                    "content": content,
+                    "metadata": metadata,
                     "score": hit.score
                 })
         
@@ -431,7 +455,10 @@ class RAGSystem:
         return len(chunks)
     
     def query(self, question: str, top_k: int = 3):
-        """Query the RAG system with a question"""
+        """
+        Query the RAG system with a question.
+        Now preserves and returns bbox information in sources.
+        """
         # Generate embedding for the question
         query_embedding = self.embedding_generator.generate_embedding(question)
         
@@ -445,9 +472,34 @@ class RAGSystem:
         chain = self.prompt_template | self.llm
         answer = chain.invoke({"context": context, "question": question})
         
+        # Prepare source information with bbox data
+        sources = []
+        for doc in results:
+            source_info = {
+                "content": doc["content"],
+                "score": doc["score"]
+            }
+            
+            # Copy metadata fields
+            metadata = doc.get("metadata", {})
+            if metadata:
+                # Include source document if available
+                if "source" in metadata:
+                    source_info["source"] = metadata["source"]
+                    
+                # Include page information if available
+                if "page_idx" in metadata:
+                    source_info["page"] = metadata["page_idx"]
+                    
+                # Include original_boxes if available
+                if "original_boxes" in metadata:
+                    source_info["original_boxes"] = metadata["original_boxes"]
+                    
+            sources.append(source_info)
+        
         return {
             "answer": answer,
-            "sources": results
+            "sources": sources
         }
     
     def cleanup(self):

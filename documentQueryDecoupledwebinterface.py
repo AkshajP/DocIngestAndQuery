@@ -4,6 +4,7 @@ import time
 import logging
 import json
 from documentQueryDecoupled import DiskBasedDocumentQuerier, format_document_table, format_history_display
+from pdf_utils import PDFHighlighter
 
 # Set up logging
 logging.basicConfig(
@@ -44,6 +45,14 @@ if "top_k" not in st.session_state:
     st.session_state.top_k = 5
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = False
+if "show_pdf_thumbnails" not in st.session_state:
+    st.session_state.show_pdf_thumbnails = True
+if "pdf_zoom" not in st.session_state:
+    st.session_state.pdf_zoom = 1.5
+if "pdf_highlighter" not in st.session_state:
+    st.session_state.pdf_highlighter = PDFHighlighter(
+        storage_dir=st.session_state.querier.storage_dir
+    )
 
 # Main title
 st.title("📚 Document Query Assistant")
@@ -154,6 +163,27 @@ st.session_state.top_k = st.sidebar.slider(
     help="Higher values may give more comprehensive but slower responses"
 )
 
+# PDF Preview Settings
+st.sidebar.subheader("PDF Preview Settings")
+
+# Toggle for showing PDF thumbnails
+st.session_state.show_pdf_thumbnails = st.sidebar.toggle(
+    "Show PDF Thumbnails", 
+    value=st.session_state.show_pdf_thumbnails,
+    help="Show highlighted regions from original PDFs"
+)
+
+# Zoom slider for PDF thumbnails
+if st.session_state.show_pdf_thumbnails:
+    st.session_state.pdf_zoom = st.sidebar.slider(
+        "PDF Zoom Level", 
+        min_value=1.0, 
+        max_value=3.0, 
+        value=st.session_state.pdf_zoom,
+        step=0.1,
+        help="Adjust zoom level for PDF thumbnails"
+    )
+
 # Chat history management
 st.sidebar.subheader("Chat History")
 
@@ -220,6 +250,63 @@ for message in st.session_state.messages:
                 for i, source in enumerate(message["sources"]):
                     st.markdown(f"**Source {i+1}** (Score: {source['score']:.4f})")
                     st.markdown(f"Document: {source['document_id']}")
+                    
+                    # Display bbox highlights if available
+                    original_boxes = source.get("original_boxes", [])
+                    
+                    if st.session_state.show_pdf_thumbnails and original_boxes:
+                        try:
+                            document_id = source["document_id"]
+                            
+                            # Check if we have multi-page highlights
+                            page_indexes = {box.get("original_page_index", 0) for box in original_boxes if "original_page_index" in box}
+                            is_multi_page = len(page_indexes) > 1
+                            
+                            # Generate thumbnail with highlights
+                            img_str = st.session_state.pdf_highlighter.get_multi_highlight_thumbnail(
+                                document_id=document_id,
+                                highlights=original_boxes,
+                                zoom=st.session_state.pdf_zoom
+                            )
+                            
+                            if img_str:
+                                # Display the thumbnail with appropriate title
+                                if is_multi_page:
+                                    st.markdown(f"**Original Locations (Across {len(page_indexes)} Pages):**")
+                                else:
+                                    st.markdown("**Original Location in PDF:**")
+                                    
+                                # Display the image
+                                st.markdown(
+                                    f'<img src="data:image/png;base64,{img_str}" style="max-width:100%; border:1px solid #ddd; border-radius:3px;">', 
+                                    unsafe_allow_html=True
+                                )
+                                
+                                # For multi-page highlights, show which pages are included
+                                if is_multi_page and st.session_state.debug_mode:
+                                    st.caption(f"Showing highlights from pages: {', '.join(str(p+1) for p in sorted(page_indexes))}")
+                            else:
+                                st.info("PDF preview unavailable")
+                                
+                                # In debug mode, show more details about why it might be unavailable
+                                if st.session_state.debug_mode:
+                                    st.warning("Possible reasons: PDF file not found, invalid page numbers, or rendering error")
+                        except Exception as e:
+                            error_msg = f"Error generating PDF preview: {str(e)}"
+                            st.error(error_msg)
+                            
+                            # Show detailed debug info in debug mode
+                            if st.session_state.debug_mode:
+                                st.error("Debug Information:")
+                                try:
+                                    debug_info = st.session_state.pdf_highlighter.debug_pdf_info(source["document_id"])
+                                    st.json(debug_info)
+                                    
+                                    # Show details about the original_boxes
+                                    st.write("Original Boxes Data:")
+                                    st.json(original_boxes)
+                                except Exception as debug_e:
+                                    st.error(f"Error generating debug info: {str(debug_e)}")
                     
                     # Show content with proper truncation
                     content = source.get('content', '')
@@ -292,6 +379,63 @@ if st.session_state.loaded_documents:
                                 st.markdown(f"**Source {i+1}** (Score: {source['score']:.4f})")
                                 st.markdown(f"Document: {source['document_id']}")
                                 
+                                # Display bbox highlights if available
+                                original_boxes = source.get("original_boxes", [])
+                                
+                                if st.session_state.show_pdf_thumbnails and original_boxes:
+                                    try:
+                                        document_id = source["document_id"]
+                                        
+                                        # Check if we have multi-page highlights
+                                        page_indexes = {box.get("original_page_index", 0) for box in original_boxes if "original_page_index" in box}
+                                        is_multi_page = len(page_indexes) > 1
+                                        
+                                        # Generate thumbnail with highlights
+                                        img_str = st.session_state.pdf_highlighter.get_multi_highlight_thumbnail(
+                                            document_id=document_id,
+                                            highlights=original_boxes,
+                                            zoom=st.session_state.pdf_zoom
+                                        )
+                                        
+                                        if img_str:
+                                            # Display the thumbnail with appropriate title
+                                            if is_multi_page:
+                                                st.markdown(f"**Original Locations (Across {len(page_indexes)} Pages):**")
+                                            else:
+                                                st.markdown("**Original Location in PDF:**")
+                                                
+                                            # Display the image
+                                            st.markdown(
+                                                f'<img src="data:image/png;base64,{img_str}" style="max-width:100%; border:1px solid #ddd; border-radius:3px;">', 
+                                                unsafe_allow_html=True
+                                            )
+                                            
+                                            # For multi-page highlights, show which pages are included
+                                            if is_multi_page and st.session_state.debug_mode:
+                                                st.caption(f"Showing highlights from pages: {', '.join(str(p+1) for p in sorted(page_indexes))}")
+                                        else:
+                                            st.info("PDF preview unavailable")
+                                            
+                                            # In debug mode, show more details about why it might be unavailable
+                                            if st.session_state.debug_mode:
+                                                st.warning("Possible reasons: PDF file not found, invalid page numbers, or rendering error")
+                                    except Exception as e:
+                                        error_msg = f"Error generating PDF preview: {str(e)}"
+                                        st.error(error_msg)
+                                        
+                                        # Show detailed debug info in debug mode
+                                        if st.session_state.debug_mode:
+                                            st.error("Debug Information:")
+                                            try:
+                                                debug_info = st.session_state.pdf_highlighter.debug_pdf_info(source["document_id"])
+                                                st.json(debug_info)
+                                                
+                                                # Show details about the original_boxes
+                                                st.write("Original Boxes Data:")
+                                                st.json(original_boxes)
+                                            except Exception as debug_e:
+                                                st.error(f"Error generating debug info: {str(debug_e)}")
+                                
                                 # Show content with proper truncation
                                 content = source.get('content', '')
                                 if len(content) > 300:
@@ -353,10 +497,13 @@ with st.expander("About This App", expanded=False):
     - Toggle between flat and tree-based retrieval methods
     - Use chat history for context in responses
     - View the sources of information used for answers
+    - See highlighted regions from the original PDFs
     
     **Settings:**
     - **Tree-based Retrieval**: Uses hierarchical document structure for more efficient retrieval
     - **Chat History**: Uses previous conversation for context
     - **Show Sources**: Displays the document sources used for answers
     - **Number of chunks**: Controls how many document chunks are retrieved for each query
+    - **PDF Thumbnails**: Shows highlighted regions from the original PDFs
+    - **PDF Zoom**: Adjusts the detail level of PDF thumbnails
     """)

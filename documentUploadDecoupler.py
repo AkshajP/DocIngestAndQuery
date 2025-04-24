@@ -22,7 +22,7 @@ from langchain_ollama import OllamaEmbeddings
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s | %(levelname)s | %(name)s - %(message)s'
 )
 logger = logging.getLogger('document_uploader')
 
@@ -346,6 +346,15 @@ class DocumentUploader:
         
         # Create directory structure
         self.storage.create_directory(doc_dir)
+        pdf_target_path = os.path.join(doc_dir, "original.pdf")
+        try:
+            # Create a copy of the original PDF in the document directory
+            with open(file_path, 'rb') as source_file:
+                pdf_content = source_file.read()
+                self.storage.write_file(pdf_content, pdf_target_path)
+            logger.info(f"Copied original PDF to {pdf_target_path}")
+        except Exception as e:
+            logger.warning(f"Could not copy original PDF to document directory: {str(e)}")
         self.storage.create_directory(os.path.join(doc_dir, "chunks"))
         self.storage.create_directory(os.path.join(doc_dir, "embeddings"))
         self.storage.create_directory(os.path.join(doc_dir, "raptor_tree"))
@@ -902,6 +911,7 @@ class Chunker:
     """
     Smart chunking of document content to create optimal-sized chunks
     and convert table formats for better retrieval.
+    Now includes tracking of bbox coordinates for each chunk.
     """
     
     def __init__(self, max_chunk_size=5000, min_chunk_size=200, overlap_size=200):
@@ -969,6 +979,7 @@ class Chunker:
     def _combine_text_items(self, text_items: List[Dict[str, Any]], page_idx: int) -> List[Dict[str, Any]]:
         """
         Combine text items into larger chunks with overlap between adjacent chunks.
+        Now preserves bbox information for each chunk.
         
         Args:
             text_items: List of text content items from same page
@@ -984,9 +995,10 @@ class Chunker:
         current_text = ""
         current_indices = []
         current_size = 0
+        current_bboxes = []  # Track bboxes for current chunk
         
         # Keep track of text and indices for overlap
-        all_text_items = []  # List of (text, index) tuples in order
+        all_text_items = []  # List of (text, index, bbox) tuples in order
         
         # First pass - collect all valid text items
         for item in text_items:
@@ -994,7 +1006,8 @@ class Chunker:
             if not text:
                 continue
             
-            all_text_items.append((text, item["original_index"]))
+            bbox = item.get("bbox", None)  # Get bbox if available
+            all_text_items.append((text, item["original_index"], bbox))
         
         if not all_text_items:
             return []
@@ -1004,7 +1017,7 @@ class Chunker:
         i = 0
         
         while i < len(all_text_items):
-            text, idx = all_text_items[i]
+            text, idx, bbox = all_text_items[i]
             text_size = len(text)
             
             # If adding this item would exceed max size and we have enough content,
@@ -1014,13 +1027,25 @@ class Chunker:
                 
                 # Create chunk
                 chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
+                
+                # Prepare original_boxes data structure - contains all bbox information
+                original_boxes = []
+                for j, bbox_info in enumerate(current_bboxes):
+                    if bbox_info:
+                        original_boxes.append({
+                            "original_page_index": page_idx,
+                            "bbox": bbox_info,
+                            "original_index": current_indices[j]
+                        })
+                
                 chunk = {
                     "id": chunk_id,
                     "content": current_text,
                     "metadata": {
                         "type": "text",
                         "page_idx": page_idx,
-                        "original_indices": current_indices
+                        "original_indices": current_indices,
+                        "original_boxes": original_boxes  # Add bbox information
                     }
                 }
                 chunks.append(chunk)
@@ -1033,7 +1058,7 @@ class Chunker:
                 for j in range(len(current_indices) - 1, -1, -1):
                     item_idx = current_indices[j]
                     # Find the position of this item in all_text_items
-                    pos = next((k for k, (_, idx) in enumerate(all_text_items) if idx == item_idx), -1)
+                    pos = next((k for k, (_, idx, _) in enumerate(all_text_items) if idx == item_idx), -1)
                     
                     if pos >= 0:
                         item_text = all_text_items[pos][0]
@@ -1055,6 +1080,7 @@ class Chunker:
                 # Reset for next chunk
                 current_text = ""
                 current_indices = []
+                current_bboxes = []
                 current_size = 0
                 continue  # Skip increment at end of loop since we set i explicitly
             
@@ -1063,19 +1089,32 @@ class Chunker:
                 current_text += " "
             current_text += text
             current_indices.append(idx)
+            current_bboxes.append(bbox)  # Store bbox for this text segment
             current_size += text_size
             i += 1
         
         # Add the last chunk if it has content
         if current_text:
             chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
+            
+            # Prepare original_boxes data for the last chunk
+            original_boxes = []
+            for j, bbox_info in enumerate(current_bboxes):
+                if bbox_info:
+                    original_boxes.append({
+                        "original_page_index": page_idx,
+                        "bbox": bbox_info,
+                        "original_index": current_indices[j]
+                    })
+            
             chunk = {
                 "id": chunk_id,
                 "content": current_text,
                 "metadata": {
                     "type": "text",
                     "page_idx": page_idx,
-                    "original_indices": current_indices
+                    "original_indices": current_indices,
+                    "original_boxes": original_boxes  # Add bbox information
                 }
             }
             chunks.append(chunk)
@@ -1085,6 +1124,7 @@ class Chunker:
     def _process_table_items(self, table_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Process table items, converting HTML to JSON.
+        Now preserves bbox information.
         
         Args:
             table_items: List of table content items
@@ -1098,7 +1138,7 @@ class Chunker:
             table_body = item.get("table_body", "")
             if not table_body:
                 continue
-            
+                
             # Get table caption
             table_caption = item.get("table_caption", "")
             if isinstance(table_caption, list):
@@ -1113,16 +1153,30 @@ class Chunker:
             # Create chunk ID
             chunk_id = f"table_{item['original_index']}"
             
+            # Get bbox if available
+            bbox = item.get("bbox")
+            page_idx = item.get("page_idx", 0)
+            
+            # Create original_boxes structure
+            original_boxes = []
+            if bbox:
+                original_boxes.append({
+                    "original_page_index": page_idx,
+                    "bbox": bbox,
+                    "original_index": item["original_index"]
+                })
+            
             # Create chunk
             chunk = {
                 "id": chunk_id,
                 "content": table_text,  # Use text representation as content
                 "metadata": {
                     "type": "table",
-                    "page_idx": item.get("page_idx", 0),
+                    "page_idx": page_idx,
                     "original_index": item["original_index"],
                     "caption": table_caption,
-                    "table_data": table_json  # Store JSON data in metadata
+                    "table_data": table_json,  # Store JSON data in metadata
+                    "original_boxes": original_boxes  # Add bbox information
                 }
             }
             chunks.append(chunk)
@@ -1210,6 +1264,7 @@ class Chunker:
     def _process_image_items(self, image_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Process image items.
+        Now preserves bbox information.
         
         Args:
             image_items: List of image content items
@@ -1237,16 +1292,30 @@ class Chunker:
             # Create chunk ID
             chunk_id = f"image_{item['original_index']}"
             
+            # Get bbox if available
+            bbox = item.get("bbox")
+            page_idx = item.get("page_idx", 0)
+            
+            # Create original_boxes structure
+            original_boxes = []
+            if bbox:
+                original_boxes.append({
+                    "original_page_index": page_idx,
+                    "bbox": bbox,
+                    "original_index": item["original_index"]
+                })
+            
             # Create chunk
             chunk = {
                 "id": chunk_id,
                 "content": content,
                 "metadata": {
                     "type": "image",
-                    "page_idx": item.get("page_idx", 0),
+                    "page_idx": page_idx,
                     "original_index": item["original_index"],
                     "img_path": img_path,
-                    "caption": img_caption
+                    "caption": img_caption,
+                    "original_boxes": original_boxes  # Add bbox information
                 }
             }
             chunks.append(chunk)

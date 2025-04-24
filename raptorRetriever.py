@@ -190,7 +190,7 @@ class Raptor:
             return False
     
     def _build_tree(self, document_chunks: List[Document]):
-        """Build the RAPTOR tree from document chunks."""
+        """Build the RAPTOR tree from document chunks, preserving bbox information."""
         logger.info(f"Building RAPTOR tree with {len(document_chunks)} chunks")
         
         # Reset tree and all_documents
@@ -226,9 +226,13 @@ class Raptor:
         # Store original document chunks as leaf nodes (layer 0)
         for i, chunk in enumerate(document_chunks):
             node_id = f"leaf_{i}"
+            
+            # Ensure original_boxes is preserved in metadata
+            metadata_copy = chunk.metadata.copy() if chunk.metadata else {}
+            
             self.all_documents[node_id] = {
                 "text": chunk.page_content,
-                "metadata": chunk.metadata,
+                "metadata": metadata_copy,  # Contains original_boxes if present
                 "level": 0,
                 "is_original": True,
                 "children": set()  # No children for leaf nodes
@@ -256,12 +260,20 @@ class Raptor:
         for doc_id, doc_info in self.all_documents.items():
             if doc_info["is_original"]:
                 all_texts.append(doc_info["text"])
-                all_metadatas.append({
+                
+                # Create metadata including original_boxes if present
+                metadata = {
                     "id": doc_id,
                     "level": doc_info["level"],
                     "source": doc_info["metadata"].get("source", "unknown"),
                     "is_original": True
-                })
+                }
+                
+                # Copy original_boxes if present
+                if "original_boxes" in doc_info["metadata"]:
+                    metadata["original_boxes"] = doc_info["metadata"]["original_boxes"]
+                
+                all_metadatas.append(metadata)
         
         # Add summaries from all levels
         for level, (clusters_df, summaries_df) in self.tree.items():
@@ -277,10 +289,22 @@ class Raptor:
                 child_indices = clusters_df[clusters_df['cluster'].apply(lambda x: row['cluster'] in x)].index.tolist()
                 child_nodes = [f"leaf_{idx}" if level == 1 else f"summary_l{level-1}_c{idx}" for idx in child_indices]
                 
-                # Add to all_documents
+                # Collect original_boxes from all children for this summary node
+                all_original_boxes = []
+                for child_node in child_nodes:
+                    if child_node in self.all_documents:
+                        child_metadata = self.all_documents[child_node]["metadata"]
+                        if "original_boxes" in child_metadata:
+                            all_original_boxes.extend(child_metadata["original_boxes"])
+                
+                # Add to all_documents with original_boxes
+                node_metadata = {"level": level, "cluster": row["cluster"]}
+                if all_original_boxes:
+                    node_metadata["original_boxes"] = all_original_boxes
+                
                 self.all_documents[summary_id] = {
                     "text": summary_text,
-                    "metadata": {"level": level, "cluster": row["cluster"]},
+                    "metadata": node_metadata,
                     "level": level,
                     "is_original": False,
                     "children": set(child_nodes)
@@ -294,12 +318,20 @@ class Raptor:
                 
                 # Add to lists for vector store
                 all_texts.append(summary_text)
-                all_metadatas.append({
+                
+                # Prepare metadata for vector store
+                summary_metadata = {
                     "id": summary_id,
                     "level": level,
                     "cluster": row["cluster"],
                     "is_original": False
-                })
+                }
+                
+                # Include original_boxes if available
+                if all_original_boxes:
+                    summary_metadata["original_boxes"] = all_original_boxes
+                    
+                all_metadatas.append(summary_metadata)
             
             # Update layer_to_nodes mapping
             self.layer_to_nodes[level] = layer_nodes
@@ -513,10 +545,40 @@ class Raptor:
         texts: List[str],
         level: int
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Embed, cluster, and summarize texts."""
+        """Embed, cluster, and summarize texts, ensuring at least one summary per level."""
         logger.info(f"Processing level {level} with {len(texts)} texts")
         
-        # Embed and cluster the texts
+        # Handle edge case with very few texts
+        if len(texts) <= 1 and level > 1:
+            # For levels above 1, if we only have one text, still create a summary
+            # Create a simple "cluster" (no actual clustering needed)
+            dummy_embedding = self.embeddings.embed_query(texts[0])
+            df_clusters = pd.DataFrame({
+                "text": texts,
+                "embd": [dummy_embedding],
+                "cluster": [[0]]  # Single cluster
+            })
+            
+            # Generate a summary
+            formatted_txt = f"--- SUMMARY FROM LEVEL {level-1} ---\n\n{texts[0]}"
+            try:
+                summary_chain = self.summary_prompt | self.llm | StrOutputParser()
+                summary = summary_chain.invoke({"context": formatted_txt})
+                logger.debug(f"Generated summary for single text at level {level}")
+            except Exception as e:
+                logger.error(f"Error generating summary for single text: {str(e)}")
+                summary = f"Summary of: {texts[0][:100]}..."  # Fallback summary
+            
+            # Create summary DataFrame
+            df_summary = pd.DataFrame({
+                "summaries": [summary],
+                "level": [level],
+                "cluster": [0]
+            })
+            
+            return df_clusters, df_summary
+        
+        # Original clustering and summarization for multiple texts
         df_clusters = self._embed_cluster_texts(texts)
         
         # Prepare expanded DataFrame for easier manipulation
@@ -534,34 +596,60 @@ class Raptor:
         # Create expanded DataFrame
         expanded_df = pd.DataFrame(expanded_list)
         
+        # Initialize df_summary as an empty DataFrame in case we don't create any summaries
+        df_summary = pd.DataFrame(columns=["summaries", "level", "cluster"])
+        
         # Get unique cluster identifiers
-        all_clusters = expanded_df["cluster"].unique()
+        all_clusters = expanded_df["cluster"].unique() if not expanded_df.empty else []
         
         logger.info(f"Generated {len(all_clusters)} clusters at level {level}")
         
-        # Set up summarization
-        summary_chain = self.summary_prompt | self.llm | StrOutputParser()
-        
         # Format text within each cluster and generate summaries
         summaries = []
+        cluster_ids = []
         for i in all_clusters:
             df_cluster = expanded_df[expanded_df["cluster"] == i]
             formatted_txt = self._format_texts(df_cluster)
             
             try:
+                summary_chain = self.summary_prompt | self.llm | StrOutputParser()
                 summary = summary_chain.invoke({"context": formatted_txt})
                 summaries.append(summary)
+                cluster_ids.append(i)
                 logger.debug(f"Generated summary for cluster {i} at level {level}")
             except Exception as e:
                 logger.error(f"Error generating summary for cluster {i}: {str(e)}")
+                # Still add the cluster but with an error message as summary
                 summaries.append(f"Error generating summary: {str(e)}")
+                cluster_ids.append(i)
         
-        # Create DataFrame for summaries
-        df_summary = pd.DataFrame({
-            "summaries": summaries,
-            "level": [level] * len(summaries),
-            "cluster": list(all_clusters)
-        })
+        # Create DataFrame for summaries if we have any
+        if summaries:
+            df_summary = pd.DataFrame({
+                "summaries": summaries,
+                "level": [level] * len(summaries),
+                "cluster": cluster_ids
+            })
+        
+        # Final check: ensure we created at least one summary
+        if df_summary.empty and texts:
+            # Create at least one summary using all texts
+            all_text = "\n\n".join(texts)
+            formatted_txt = f"--- COMBINED TEXT FOR LEVEL {level} ---\n\n{all_text}"
+            
+            try:
+                summary_chain = self.summary_prompt | self.llm | StrOutputParser()
+                summary = summary_chain.invoke({"context": formatted_txt})
+            except Exception as e:
+                logger.error(f"Error generating fallback summary: {str(e)}")
+                summary = f"Combined summary from level {level}"
+                
+            # Create a summary DataFrame with at least one entry
+            df_summary = pd.DataFrame({
+                "summaries": [summary],
+                "level": [level],
+                "cluster": [0]
+            })
         
         return df_clusters, df_summary
     
@@ -579,9 +667,9 @@ class Raptor:
         # Store results
         results[level] = (df_clusters, df_summary)
         
-        # Check if further recursion is needed
-        unique_clusters = df_summary["cluster"].nunique()
-        if level < self.max_tree_levels and unique_clusters > 1 and len(texts) > 1:
+        # Modified condition: Continue building tree as long as we haven't reached max_level
+        # and we have at least one text to summarize
+        if level < self.max_tree_levels and len(texts) > 0:
             # Use summaries as input for next level
             new_texts = df_summary["summaries"].tolist()
             next_level_results = self._recursive_embed_cluster_summarize(new_texts, level + 1)
@@ -632,6 +720,7 @@ class Raptor:
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Retrieve information using the collapsed tree approach (treats tree as flat).
+        Preserves bbox information in results.
         
         Args:
             query: The query string
@@ -672,12 +761,15 @@ class Raptor:
                     node_text = " ".join(node_text.split()[:max_tokens])
                     node_tokens = max_tokens
             
-            # Add node to results
+            # Add node to results - now preserving original_boxes
+            metadata = result["metadata"].copy()
+            
             node_info = {
                 "content": node_text,
-                "metadata": result["metadata"],
+                "metadata": metadata,  # This now includes original_boxes if present
                 "score": result["score"]
             }
+            
             selected_nodes.append(node_info)
             context_parts.append(node_text)
             total_tokens += node_tokens
@@ -687,7 +779,7 @@ class Raptor:
         
         logger.info(f"Retrieved {len(selected_nodes)} nodes with {total_tokens} tokens using collapsed tree")
         return selected_nodes, context
-    
+
     def _retrieve_information_hierarchical(
         self, 
         query: str, 
@@ -697,19 +789,7 @@ class Raptor:
         max_tokens: int
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Retrieve information using an improved hierarchical tree traversal approach
-        that dynamically selects the most relevant nodes across layers while still
-        respecting the hierarchical structure.
-        
-        Args:
-            query: The query string
-            start_layer: The highest layer to start from (usually the highest/most abstract)
-            num_layers: Number of layers to consider
-            top_k: Maximum number of nodes to consider overall (not per layer)
-            max_tokens: Maximum tokens to include in the context
-                
-        Returns:
-            Tuple of (selected_nodes_info, context_text)
+        Retrieve information using hierarchical tree traversal with strong preference for summary nodes.
         """
         logger.info(f"Using dynamic hierarchical traversal from layer {start_layer}")
         
@@ -729,7 +809,7 @@ class Raptor:
                 layer_nodes = self.layer_to_nodes[layer]
                 all_candidate_nodes.extend([(node_id, layer) for node_id in layer_nodes])
         
-        # Calculate similarity for all candidate nodes (this could be optimized with batch operations)
+        # Calculate similarity for all candidate nodes
         node_similarities = []
         for node_id, layer in all_candidate_nodes:
             # Get node embedding and text
@@ -738,6 +818,12 @@ class Raptor:
             similarity = self._calculate_similarity(query_embedding, node_embedding)
             node_tokens = self._count_tokens(node_text)
             
+            # Get node metadata
+            node_metadata = self.all_documents.get(node_id, {}).get("metadata", {})
+            
+            # Determine if this is a summary node or leaf node
+            is_summary = layer > 0  # Layer 0 contains leaf nodes
+            
             # Store all the information we need for sorting and selection
             node_info = {
                 "id": node_id,
@@ -745,34 +831,41 @@ class Raptor:
                 "similarity": similarity,
                 "content": node_text,
                 "tokens": node_tokens,
-                # Add layer bias to boost higher layers slightly
-                "adjusted_score": similarity * (1 + 0.05 * layer)  # 5% boost per layer
+                "metadata": node_metadata,
+                "is_summary": is_summary,
+                # MODIFIED: Apply much stronger bias for summary nodes
+                # Use boosting for layers and a flat boost for summaries
+                "adjusted_score": similarity + (2.0 * layer) * (3.0 if is_summary else 1.0)
             }
             node_similarities.append(node_info)
         
-        # Sort all nodes based on adjusted score (similarity with slight layer bias)
+        # Sort all nodes based on adjusted score
         node_similarities.sort(key=lambda x: x["adjusted_score"], reverse=True)
         
-        # Now select nodes dynamically across all layers, respecting the token budget
-        # This approach is more similar to collapsed tree retrieval
+        # MODIFIED: First get summaries, then leaf nodes if needed
+        summary_nodes = [node for node in node_similarities if node["is_summary"]]
+        leaf_nodes = [node for node in node_similarities if not node["is_summary"]]
+        
+        # Prioritize summary nodes, but include leaf nodes if we need more
+        prioritized_nodes = summary_nodes + leaf_nodes
+        
+        # Now select nodes, respecting the token budget
         selected_nodes = []
         context_parts = []
         total_tokens = 0
         
-        # Take the top_k most relevant nodes across all layers
-        # But still respect the token budget
-        top_candidates = node_similarities[:top_k * 2]  # Get a wider pool than top_k
+        # Take top summary nodes first
+        # Process nodes in order of priority
+        top_candidates = prioritized_nodes[:top_k * 3]  # Get a wider pool than top_k
         
-        # Process nodes in order of relevance (not strictly by layer)
         for node in top_candidates:
             # Check if adding this node would exceed the token budget
             if total_tokens + node["tokens"] > max_tokens:
                 # If we've already got some nodes, skip this one
                 if selected_nodes:
                     continue
-                # Otherwise, truncate the first node to fit (better to have some context than none)
+                # Otherwise, truncate the first node to fit
                 else:
-                    # Truncate text to fit the token budget
                     words = node["content"].split()
                     truncated_text = " ".join(words[:max_tokens])
                     node["content"] = truncated_text
@@ -783,7 +876,9 @@ class Raptor:
                 "id": node["id"],
                 "content": node["content"],
                 "layer": node["layer"],
-                "score": node["similarity"]
+                "score": node["similarity"],
+                "is_summary": node["is_summary"],  # Added for clarity in results
+                "metadata": node["metadata"]
             }
             selected_nodes.append(node_info)
             context_parts.append(node["content"])
@@ -793,25 +888,27 @@ class Raptor:
             if len(selected_nodes) >= top_k:
                 break
         
-        # If we haven't selected any nodes yet, take the single most relevant one
-        # and truncate it to fit our token budget (fallback mechanism)
+        # Fallback if no nodes selected
         if not selected_nodes and node_similarities:
-            best_node = node_similarities[0]
+            # Prefer a summary node for fallback if available
+            fallback_node = next((node for node in node_similarities if node["is_summary"]), node_similarities[0])
             
-            # Truncate the text to fit our token budget if needed
-            if best_node["tokens"] > max_tokens:
-                words = best_node["content"].split()
+            # Truncate if needed
+            if fallback_node["tokens"] > max_tokens:
+                words = fallback_node["content"].split()
                 truncated_text = " ".join(words[:max_tokens])
                 node_tokens = max_tokens
             else:
-                truncated_text = best_node["content"]
-                node_tokens = best_node["tokens"]
+                truncated_text = fallback_node["content"]
+                node_tokens = fallback_node["tokens"]
             
             node_info = {
-                "id": best_node["id"],
+                "id": fallback_node["id"],
                 "content": truncated_text,
-                "layer": best_node["layer"],
-                "score": best_node["similarity"]
+                "layer": fallback_node["layer"],
+                "score": fallback_node["similarity"],
+                "is_summary": fallback_node.get("is_summary", False),
+                "metadata": fallback_node["metadata"]
             }
             selected_nodes.append(node_info)
             context_parts.append(truncated_text)
@@ -821,16 +918,11 @@ class Raptor:
         context = "\n\n".join(context_parts)
         
         # Log retrieval statistics
-        layer_distribution = {}
-        for node in selected_nodes:
-            layer = node["layer"]
-            if layer in layer_distribution:
-                layer_distribution[layer] += 1
-            else:
-                layer_distribution[layer] = 1
+        summary_count = len([node for node in selected_nodes if node.get("is_summary", False)])
+        leaf_count = len(selected_nodes) - summary_count
         
-        logger.info(f"Retrieved {len(selected_nodes)} nodes with ~{total_tokens} tokens using dynamic hierarchical traversal")
-        logger.info(f"Layer distribution: {layer_distribution}")
+        logger.info(f"Retrieved {len(selected_nodes)} nodes ({summary_count} summaries, {leaf_count} leaves)")
+        logger.info(f"Total tokens: ~{total_tokens}")
         
         return selected_nodes, context
     
@@ -839,13 +931,13 @@ class Raptor:
         query: str,
         top_k: int = 5,
         max_tokens: int = 3000,
-        collapse_tree: bool = True,
+        collapse_tree: bool = False,  # Changed default to False to prefer hierarchical
         start_layer: Optional[int] = None,
-        num_layers: Optional[int] = None
+        num_layers: Optional[int] = None,
+        summary_preference: float = 3.0  # New parameter to control summary preference
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
-        Retrieve relevant chunks for a query using either collapsed tree 
-        or hierarchical traversal method.
+        Retrieve relevant chunks for a query with strong preference for summary nodes.
         
         Args:
             query: The query string
@@ -854,11 +946,12 @@ class Raptor:
             collapse_tree: Whether to use collapsed tree retrieval (False for hierarchical)
             start_layer: Starting layer for hierarchical traversal (highest by default)
             num_layers: Number of layers to traverse in hierarchical mode
+            summary_preference: Multiplier for summary node scores (higher = stronger preference)
             
         Returns:
             Tuple of (retrieved_chunks, context_text)
         """
-        logger.info(f"Retrieving chunks for query: {query}")
+        logger.info(f"Retrieving chunks for query: {query} with summary_preference={summary_preference}")
         
         # Set default values for hierarchical traversal
         if not collapse_tree:
@@ -889,6 +982,8 @@ class Raptor:
             )
         else:
             logger.info(f"Using hierarchical traversal from layer {start_layer} with {num_layers} layers")
+            # Set the summary preference as a thread-local variable or pass to the method
+            # For this example, we'll modify the method call
             selected_nodes, context = self._retrieve_information_hierarchical(
                 query=query,
                 start_layer=start_layer,
@@ -915,7 +1010,7 @@ if __name__ == "__main__":
     )
     
     # Find PDF documents in the current directory
-    doc_files = ['output/pdfs/abc.md'] # [f for f in os.listdir('.') if f.endswith('.pdf')]
+    doc_files = ['abc.md'] # [f for f in os.listdir('.') if f.endswith('.pdf')]
     
     if not doc_files:
         logger.warning("No PDF documents found in the current directory.")

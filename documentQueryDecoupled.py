@@ -769,16 +769,21 @@ class DiskBasedDocumentQuerier:
         # Format source information
         sources = []
         for chunk in chunks:
+            # Extract bbox information if available
+            metadata = chunk.get("metadata", {})
+            original_boxes = metadata.get("original_boxes", [])
+            
             source = {
                 "document_id": chunk["document_id"],
                 "content": chunk["content"],
                 "score": chunk["score"],
-                "metadata": chunk["metadata"]
+                "metadata": metadata,
+                "original_boxes": original_boxes  # Preserve original_boxes for highlighting
             }
             sources.append(source)
-        
+
         time_taken = time.time() - start_time
-        
+
         return {
             "status": "success",
             "message": f"Query processed in {time_taken:.2f} seconds",

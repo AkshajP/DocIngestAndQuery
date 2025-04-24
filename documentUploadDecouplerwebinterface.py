@@ -59,8 +59,8 @@ logger = logging.getLogger()  # Root logger to capture all logs
 logger.setLevel(logging.INFO)
 
 # Remove existing handlers to avoid duplicates
-for handler in logger.handlers[:]:
-    logger.removeHandler(handler)
+# for handler in logger.handlers[:]:
+#     logger.removeHandler(handler)
 
 # Add our custom handler
 handler = StreamlitLogHandler()
