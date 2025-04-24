@@ -1,0 +1,32 @@
+{
+    "app_name": "Document RAG API",
+    "debug": false,
+    "log_level": "INFO",
+    "vector_db": {
+      "host": "localhost",
+      "port": "19530",
+      "collection_name": "document_store",
+      "dimension": 768,
+      "partition_strategy": "document_id"
+    },
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "llama3.2",
+      "embed_model": "llama3.2",
+      "temperature": 0.1,
+      "max_tokens": 2000
+    },
+    "storage": {
+      "storage_type": "local",
+      "storage_dir": "document_store",
+      "s3_bucket": null,
+      "s3_prefix": "",
+      "aws_region": "us-east-1"
+    },
+    "processing": {
+      "chunk_size": 1000,
+      "chunk_overlap": 200,
+      "max_tree_levels": 3,
+      "language": "en"
+    }
+  }
