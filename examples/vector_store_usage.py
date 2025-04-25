@@ -34,8 +34,13 @@ def generate_sample_entities(num_docs: int = 2, chunks_per_doc: int = 5) -> List
     content_types = ["text", "table", "image"]
     chunk_types = ["original", "summary"]
     
+    # Define a few sample case IDs
+    case_ids = ["case_A", "case_B", "case_C"]
+    
     for doc_idx in range(num_docs):
         document_id = f"doc_{doc_idx + 1}"
+        # Assign a case_id (cycling through the available ones)
+        case_id = case_ids[doc_idx % len(case_ids)]
         
         # Generate different types of chunks for each document
         for chunk_idx in range(chunks_per_doc):
@@ -63,6 +68,7 @@ def generate_sample_entities(num_docs: int = 2, chunks_per_doc: int = 5) -> List
                 chunk_id=chunk_id,
                 content=content,
                 embedding=generate_random_embedding(),
+                case_id=case_id,  # Add the case_id here
                 content_type=content_type,
                 chunk_type=chunk_type,
                 page_number=random.randint(1, 10),
@@ -115,9 +121,9 @@ def main():
             text_count = client.count_entities('content_type == "text"')
             logger.info(f"Text entities: {text_count}")
             
-            # Get count by chunk type
-            original_count = client.count_entities('chunk_type == "original"')
-            logger.info(f"Original chunks: {original_count}")
+            # Get count by case_id
+            case_a_count = client.count_entities('case_id == "case_A"')
+            logger.info(f"Case A entities: {case_a_count}")
             
             # Get partition statistics
             partition_stats = client.get_partition_statistics()
@@ -137,31 +143,43 @@ def main():
             results = client.search(search_params)
             logger.info(f"General search returned {len(results)} results")
             
-            # Now try with document filtering
-            filtered_search_params = VectorSearchParams(
+            # Now try with case_id filtering
+            case_filtered_search_params = VectorSearchParams(
                 query_embedding=query_embedding,
-                document_ids=["doc_1", "doc_2"],
-                content_types=["text"],
-                chunk_types=["original"],
+                case_ids=["case_A"],
                 top_k=3
             )
             
-            # Execute filtered search
-            filtered_results = client.search(filtered_search_params)
+            # Execute case-filtered search
+            case_filtered_results = client.search(case_filtered_search_params)
             
-            # Display filtered results
-            logger.info(f"Filtered search returned {len(filtered_results)} results")
-            for i, result in enumerate(filtered_results):
+            # Display case-filtered results
+            logger.info(f"Case-filtered search returned {len(case_filtered_results)} results")
+            for i, result in enumerate(case_filtered_results):
                 logger.info(f"Result {i+1}: Score={result.score:.4f}")
                 logger.info(f"  - Document: {result.entity.document_id}")
+                logger.info(f"  - Case ID: {result.entity.case_id}")
                 logger.info(f"  - Content: {result.entity.content[:50]}...")
                 logger.info(f"  - Type: {result.entity.content_type}")
                 logger.info(f"  - Metadata: {result.entity.metadata}")
             
-            # Test deletion by document ID
-            delete_doc_id = "doc_1"
-            logger.info(f"Deleting entities for document: {delete_doc_id}")
-            client.delete_by_document_ids([delete_doc_id])
+            # Test combined filtering (document_id and case_id)
+            combined_search_params = VectorSearchParams(
+                query_embedding=query_embedding,
+                document_ids=["doc_1"],
+                case_ids=["case_A"],
+                content_types=["text"],
+                top_k=3
+            )
+            
+            # Execute combined filtered search
+            combined_results = client.search(combined_search_params)
+            logger.info(f"Combined filtering search returned {len(combined_results)} results")
+            
+            # Test deletion by case ID
+            delete_case_id = "case_B"
+            logger.info(f"Deleting entities for case ID: {delete_case_id}")
+            client.delete_by_filter(f'case_id == "{delete_case_id}"')
             
             # Wait a moment for deletion to complete
             time.sleep(1)
@@ -170,9 +188,9 @@ def main():
             count_after = client.count_entities()
             logger.info(f"Total entities after deletion: {count_after}")
             
-            # Count remaining doc_1 entities specifically
-            doc1_count = client.count_entities('document_id == "doc_1"')
-            logger.info(f"Remaining doc_1 entities: {doc1_count}")
+            # Count remaining case_B entities specifically
+            case_b_count = client.count_entities('case_id == "case_B"')
+            logger.info(f"Remaining case_B entities: {case_b_count}")
             
         else:
             logger.error("Failed to add entities")

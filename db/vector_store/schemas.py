@@ -27,22 +27,21 @@ class ScalarField(BaseModel):
 
 class PartitionConfig(BaseModel):
     """Configuration for Milvus partitioning"""
-    strategy: str = "document_id"  # "document_id", "document_type", "hybrid"
-    field: str = "document_id"
+    strategy: str = "case_id"  # "document_id", "case_id", "hybrid"
+    field: str = "case_id"
     
     def get_partition_key(self, entity_data: Dict[str, Any]) -> str:
         """Generate partition key based on entity data and strategy"""
         if self.strategy == "document_id":
             return f"doc_{entity_data.get('document_id', 'unknown')}"
-        elif self.strategy == "document_type":
-            return f"type_{entity_data.get('content_type', 'text')}"
+        elif self.strategy == "case_id":
+            return f"case_{entity_data.get('case_id', 'unknown')}"
         elif self.strategy == "hybrid":
             doc_id = entity_data.get('document_id', 'unknown')
-            content_type = entity_data.get('content_type', 'text')
-            return f"doc_{doc_id}_type_{content_type}"
+            case_id = entity_data.get('case_id', 'unknown')
+            return f"case_{case_id}_doc_{doc_id}"
         else:
             return "default"
-
 
 class CollectionSchema(BaseModel):
     """Schema definition for a Milvus collection"""
@@ -57,23 +56,25 @@ class CollectionSchema(BaseModel):
         """Create a default schema for document storage"""
         scalar_fields = [
             ScalarField(name="id", field_type="VARCHAR", is_primary=True, max_length=100, 
-                       description="Unique entity identifier"),
+                    description="Unique entity identifier"),
             ScalarField(name="document_id", field_type="VARCHAR", max_length=100, 
-                       description="Document identifier"),
+                    description="Document identifier"),
+            ScalarField(name="case_id", field_type="VARCHAR", max_length=256, 
+                    description="Case identifier for grouping documents"),
             ScalarField(name="chunk_id", field_type="VARCHAR", max_length=100, 
-                       description="Chunk identifier within document"),
+                    description="Chunk identifier within document"),
             ScalarField(name="content", field_type="VARCHAR", max_length=65535, 
-                       description="Text content of the chunk"),
+                    description="Text content of the chunk"),
             ScalarField(name="content_type", field_type="VARCHAR", max_length=50, 
-                       description="Type of content (text, table, image, etc.)"),
+                    description="Type of content (text, table, image, etc.)"),
             ScalarField(name="chunk_type", field_type="VARCHAR", max_length=50, 
-                       description="Type of chunk (original, summary, etc.)"),
+                    description="Type of chunk (original, summary, etc.)"),
             ScalarField(name="page_number", field_type="INT64", 
-                       description="Page number in the original document"),
+                    description="Page number in the original document"),
             ScalarField(name="tree_level", field_type="INT64", 
-                       description="RAPTOR tree level (0 for original chunks)"),
+                    description="RAPTOR tree level (0 for original chunks)"),
             ScalarField(name="metadata", field_type="JSON", 
-                       description="Additional metadata about the chunk"),
+                    description="Additional metadata about the chunk"),
         ]
         
         vector_field = VectorField(
@@ -82,8 +83,8 @@ class CollectionSchema(BaseModel):
         )
         
         partition_config = PartitionConfig(
-            strategy="document_id",
-            field="document_id"
+            strategy="case_id",
+            field="case_id"
         )
         
         return cls(
@@ -99,6 +100,7 @@ class VectorEntity(BaseModel):
     """Entity to be stored in the vector database"""
     id: str
     document_id: str
+    case_id: Optional[str] = "default"
     chunk_id: str
     content: str
     embedding: List[float]
@@ -113,6 +115,7 @@ class VectorEntity(BaseModel):
         return {
             "id": self.id,
             "document_id": self.document_id,
+            "case_id": self.case_id,
             "chunk_id": self.chunk_id,
             "content": self.content,
             "content_type": self.content_type,
@@ -129,6 +132,7 @@ class VectorEntity(BaseModel):
         return cls(
             id=entity.get("id", ""),
             document_id=entity.get("document_id", ""),
+            case_id=entity.get("case_id", "default"),
             chunk_id=entity.get("chunk_id", ""),
             content=entity.get("content", ""),
             embedding=entity.get("embedding", []),
@@ -138,12 +142,12 @@ class VectorEntity(BaseModel):
             tree_level=entity.get("tree_level", 0),
             metadata=entity.get("metadata", {})
         )
-
-
+        
 class VectorSearchParams(BaseModel):
     """Parameters for vector search"""
     query_embedding: List[float]
     document_ids: Optional[List[str]] = None
+    case_ids: Optional[List[str]] = None
     content_types: Optional[List[str]] = None
     chunk_types: Optional[List[str]] = None
     tree_levels: Optional[List[int]] = None
@@ -166,6 +170,13 @@ class VectorSearchParams(BaseModel):
                 doc_list = '", "'.join(self.document_ids)
                 expressions.append(f'document_id in ["{doc_list}"]')
         
+        if self.case_ids:
+            if len(self.case_ids) == 1:
+                expressions.append(f'case_id == "{self.case_ids[0]}"')
+            else:
+                case_list = '", "'.join(self.case_ids)
+                expressions.append(f'case_id in ["{case_list}"]')
+                
         if self.content_types:
             if len(self.content_types) == 1:
                 expressions.append(f'content_type == "{self.content_types[0]}"')

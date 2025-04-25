@@ -256,6 +256,7 @@ class MilvusClient:
                 # Convert entities to Milvus format
                 ids = []
                 document_ids = []
+                case_ids = []  # Add this line for case_ids
                 chunk_ids = []
                 contents = []
                 content_types = []
@@ -266,9 +267,13 @@ class MilvusClient:
                 embeddings = []
                 
                 for entity in batch:
+                    # Use the partition we already created
+                    doc_id = entity.document_id
+                    
                     # Extract fields
                     ids.append(entity.id)
-                    document_ids.append(entity.document_id)
+                    document_ids.append(doc_id)
+                    case_ids.append(entity.case_id)  # Add this line for case_ids
                     chunk_ids.append(entity.chunk_id)
                     contents.append(entity.content)
                     content_types.append(entity.content_type)
@@ -282,6 +287,7 @@ class MilvusClient:
                 insert_data = [
                     ids,
                     document_ids,
+                    case_ids,  # Add this line for case_ids
                     chunk_ids,
                     contents,
                     content_types,
@@ -596,6 +602,7 @@ def create_vector_entity(
     chunk_id: str,
     content: str,
     embedding: List[float],
+    case_id: str = "default",
     content_type: str = "text",
     chunk_type: str = "original",
     page_number: Optional[int] = None,
@@ -610,6 +617,7 @@ def create_vector_entity(
         chunk_id: Chunk ID
         content: Text content
         embedding: Vector embedding
+        case_id: Case ID for grouping documents
         content_type: Type of content (text, table, image, etc.)
         chunk_type: Type of chunk (original, summary, etc.)
         page_number: Page number in the original document
@@ -626,6 +634,7 @@ def create_vector_entity(
     entity = VectorEntity(
         id=entity_id,
         document_id=document_id,
+        case_id=case_id,
         chunk_id=chunk_id,
         content=content,
         embedding=embedding,
