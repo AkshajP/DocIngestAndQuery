@@ -253,9 +253,23 @@ class MilvusClient:
                 # Get current batch
                 batch = entities[i:i+batch_size]
                 
+                # Filter out entities with invalid embeddings
+                valid_batch = []
+                for entity in batch:
+                    # Verify embedding has the correct dimension
+                    if entity.embedding and len(entity.embedding) == self.dimension:
+                        valid_batch.append(entity)
+                    else:
+                        logger.warning(f"Skipping entity with invalid embedding: {entity.id}")
+                
+                if not valid_batch:
+                    logger.warning(f"No valid entities in batch {i//batch_size + 1}")
+                    continue
+                    
                 # Convert entities to Milvus format
                 ids = []
                 document_ids = []
+                case_ids = []
                 chunk_ids = []
                 contents = []
                 content_types = []
@@ -265,10 +279,11 @@ class MilvusClient:
                 metadatas = []
                 embeddings = []
                 
-                for entity in batch:
+                for entity in valid_batch:
                     # Extract fields
                     ids.append(entity.id)
                     document_ids.append(entity.document_id)
+                    case_ids.append(entity.case_id)
                     chunk_ids.append(entity.chunk_id)
                     contents.append(entity.content)
                     content_types.append(entity.content_type)
@@ -278,10 +293,33 @@ class MilvusClient:
                     metadatas.append(entity.metadata)
                     embeddings.append(entity.embedding)
                 
+                # Verify all lists have the same length
+                list_lengths = {
+                    "ids": len(ids),
+                    "document_ids": len(document_ids),
+                    "case_ids": len(case_ids),
+                    "chunk_ids": len(chunk_ids),
+                    "contents": len(contents),
+                    "content_types": len(content_types),
+                    "chunk_types": len(chunk_types),
+                    "page_numbers": len(page_numbers),
+                    "tree_levels": len(tree_levels),
+                    "metadatas": len(metadatas),
+                    "embeddings": len(embeddings)
+                }
+                
+                # Log lengths for debugging
+                logger.debug(f"List lengths for batch insertion: {list_lengths}")
+                
+                if len(set(list_lengths.values())) != 1:
+                    logger.error(f"Inconsistent list lengths for batch insertion: {list_lengths}")
+                    continue
+                
                 # Insert data
                 insert_data = [
                     ids,
                     document_ids,
+                    case_ids,
                     chunk_ids,
                     contents,
                     content_types,
@@ -301,19 +339,26 @@ class MilvusClient:
                     insert_partition = doc_partitions.get(doc_id)
                 
                 # Perform insertion
-                self.collection.insert(
-                    data=insert_data,
-                    partition_name=insert_partition
-                )
-                total_inserted += len(batch)
-                
-                logger.info(f"Inserted batch of {len(batch)} entities ({total_inserted}/{total_entities})")
+                try:
+                    self.collection.insert(
+                        data=insert_data,
+                        partition_name=insert_partition
+                    )
+                    total_inserted += len(valid_batch)
+                    logger.info(f"Inserted batch of {len(valid_batch)} entities ({total_inserted}/{total_entities})")
+                except Exception as batch_error:
+                    logger.error(f"Error inserting batch: {batch_error}")
+                    # Log the first entity's embedding shape for debugging
+                    if embeddings and len(embeddings) > 0:
+                        logger.debug(f"First embedding shape: {len(embeddings[0])}")
+                        if isinstance(embeddings[0], list) and len(embeddings[0]) > 0:
+                            logger.debug(f"First embedding type: {type(embeddings[0][0])}")
             
             # Flush to ensure data is persisted
             self.collection.flush()
             logger.info(f"Successfully inserted {total_inserted} entities")
             
-            return True
+            return total_inserted > 0
         except Exception as e:
             logger.error(f"Error adding entities: {e}")
             return False

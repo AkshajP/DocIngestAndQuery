@@ -15,7 +15,8 @@ class EmbeddingService:
         self,
         model_name: str = "llama3.2",
         base_url: str = "http://localhost:11434",
-        batch_size: int = 10
+        batch_size: int = 5,
+        embedding_dim: Optional[int] = 768
     ):
         """
         Initialize the embedding service.
@@ -29,7 +30,7 @@ class EmbeddingService:
         self.base_url = base_url
         self.batch_size = batch_size
         self.embeddings = None
-        self.embedding_dim = None
+        self.embedding_dim = embedding_dim
         
         # Initialize embeddings client
         self._initialize_embeddings()
@@ -65,7 +66,18 @@ class EmbeddingService:
             self._initialize_embeddings()
         
         try:
-            return self.embeddings.embed_query(text)
+            embedding = self.embeddings.embed_query(text)
+            # Ensure we have the correct dimension
+            if len(embedding) != self.embedding_dim:
+                logger.warning(f"Embedding dimension mismatch: got {len(embedding)}, expected {self.embedding_dim}")
+                # Pad or truncate to correct dimension
+                if len(embedding) < self.embedding_dim:
+                    # Pad with zeros
+                    embedding = embedding + [0.0] * (self.embedding_dim - len(embedding))
+                else:
+                    # Truncate
+                    embedding = embedding[:self.embedding_dim]
+            return embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
             # Return zero vector as fallback
@@ -95,28 +107,55 @@ class EmbeddingService:
         all_embeddings = []
         total_texts = len(texts)
         
-        # Process in batches to avoid memory issues
-        for i in range(0, total_texts, self.batch_size):
+        # Process in smaller batches to avoid memory issues
+        # Reduced batch size for more stability
+        effective_batch_size = min(self.batch_size, 5)
+        
+        for i in range(0, total_texts, effective_batch_size):
             batch_start = time.time()
             
-            batch_end = min(i + self.batch_size, total_texts)
+            batch_end = min(i + effective_batch_size, total_texts)
             batch_texts = texts[i:batch_end]
             
             try:
                 # Generate embeddings for this batch
-                batch_embeddings = self.embeddings.embed_documents(batch_texts)
+                batch_embeddings = []
+                # Process each text individually for better error handling
+                for text in batch_texts:
+                    try:
+                        embedding = self.embeddings.embed_query(text)
+                        # Ensure correct dimension
+                        if len(embedding) != self.embedding_dim:
+                            if len(embedding) < self.embedding_dim:
+                                embedding = embedding + [0.0] * (self.embedding_dim - len(embedding))
+                            else:
+                                embedding = embedding[:self.embedding_dim]
+                        batch_embeddings.append(embedding)
+                    except Exception as text_error:
+                        logger.error(f"Error embedding text: {str(text_error)}")
+                        batch_embeddings.append([0.0] * self.embedding_dim)
+                
                 all_embeddings.extend(batch_embeddings)
                 
                 if show_progress:
                     batch_time = time.time() - batch_start
-                    logger.info(f"Embedded batch {i//self.batch_size + 1}/{(total_texts-1)//self.batch_size + 1} "
+                    logger.info(f"Embedded batch {i//effective_batch_size + 1}/{(total_texts-1)//effective_batch_size + 1} "
                                f"({batch_end}/{total_texts}) in {batch_time:.2f}s")
                     
             except Exception as e:
-                logger.error(f"Error embedding batch {i//self.batch_size + 1}: {str(e)}")
+                logger.error(f"Error embedding batch {i//effective_batch_size + 1}: {str(e)}")
                 # Use zero vectors as fallback
-                zero_vectors = [[0.0] * (self.embedding_dim or 768) for _ in range(len(batch_texts))]
+                zero_vectors = [[0.0] * self.embedding_dim for _ in range(len(batch_texts))]
                 all_embeddings.extend(zero_vectors)
+        
+        # Verify all embeddings have the correct dimension
+        for i, emb in enumerate(all_embeddings):
+            if len(emb) != self.embedding_dim:
+                logger.warning(f"Fixing embedding {i} with wrong dimension: {len(emb)} != {self.embedding_dim}")
+                if len(emb) < self.embedding_dim:
+                    all_embeddings[i] = emb + [0.0] * (self.embedding_dim - len(emb))
+                else:
+                    all_embeddings[i] = emb[:self.embedding_dim]
         
         return all_embeddings
     
