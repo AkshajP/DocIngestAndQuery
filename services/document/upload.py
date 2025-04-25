@@ -35,6 +35,7 @@ def upload_document(
     Returns:
         Dictionary with processing status and information
     """
+    logger.info("First log")
     # Setup components
     config = config or get_config()
     start_time = time.time()

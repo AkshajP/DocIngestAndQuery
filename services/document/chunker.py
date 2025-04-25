@@ -86,17 +86,17 @@ class Chunker:
         Returns:
             List of combined text chunks
         """
-        # Implementation of the text combination logic with overlap
-        # This is a complex method with many details - refer to the original code
-        # The key functionality is preserved but simplified here
+        if not text_items:
+            return []
+        
         chunks = []
         current_text = ""
         current_indices = []
         current_size = 0
-        current_bboxes = []
+        current_bboxes = []  # Track bboxes for current chunk
         
         # Keep track of text and indices for overlap
-        all_text_items = []
+        all_text_items = []  # List of (text, index, bbox) tuples in order
         
         # First pass - collect all valid text items
         for item in text_items:
@@ -104,7 +104,7 @@ class Chunker:
             if not text:
                 continue
             
-            bbox = item.get("bbox", None)
+            bbox = item.get("bbox", None)  # Get bbox if available
             all_text_items.append((text, item["original_index"], bbox))
         
         if not all_text_items:
@@ -115,25 +115,107 @@ class Chunker:
         i = 0
         
         while i < len(all_text_items):
-            # Add text to current chunk until max size is reached
-            # Then create a chunk and start a new one with overlap
-            # Implementation details preserved from original
+            text, idx, bbox = all_text_items[i]
+            text_size = len(text)
             
-            # Create chunk when ready
-            # Add chunk to chunks list with metadata
-            # Handle overlap for next chunk
+            # If adding this item would exceed max size and we have enough content,
+            # finalize the current chunk and start a new one with overlap
+            if (current_size + text_size > self.max_chunk_size and 
+                current_size >= self.min_chunk_size):
+                
+                # Create chunk
+                chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
+                
+                # Prepare original_boxes data structure - contains all bbox information
+                original_boxes = []
+                for j, bbox_info in enumerate(current_bboxes):
+                    if bbox_info:
+                        original_boxes.append({
+                            "original_page_index": page_idx,
+                            "bbox": bbox_info,
+                            "original_index": current_indices[j]
+                        })
+                
+                chunk = {
+                    "id": chunk_id,
+                    "content": current_text,
+                    "metadata": {
+                        "type": "text",
+                        "page_idx": page_idx,
+                        "original_indices": current_indices,
+                        "original_boxes": original_boxes  # Add bbox information
+                    }
+                }
+                chunks.append(chunk)
+                
+                # Calculate new starting position with overlap
+                # Find position that gives us approximately overlap_size characters of overlap
+                overlap_chars = 0
+                backtrack_idx = -1
+                
+                for j in range(len(current_indices) - 1, -1, -1):
+                    item_idx = current_indices[j]
+                    # Find the position of this item in all_text_items
+                    pos = next((k for k, (_, idx, _) in enumerate(all_text_items) if idx == item_idx), -1)
+                    
+                    if pos >= 0:
+                        item_text = all_text_items[pos][0]
+                        overlap_chars += len(item_text)
+                        
+                        if overlap_chars >= self.overlap_size:
+                            backtrack_idx = pos
+                            break
+                
+                if backtrack_idx >= 0:
+                    # Start new chunk from this position
+                    current_chunk_start = backtrack_idx
+                    i = current_chunk_start  # Reset loop to this position
+                else:
+                    # If we couldn't find a good overlap point, move forward by half the chunk
+                    current_chunk_start = max(0, i - 2)  # At least go back 2 items if possible
+                    i = current_chunk_start
+                
+                # Reset for next chunk
+                current_text = ""
+                current_indices = []
+                current_bboxes = []
+                current_size = 0
+                continue  # Skip increment at end of loop since we set i explicitly
             
-            chunk_id = f"text_{uuid.uuid4().hex[:8]}"
-            chunks.append({
+            # Add this item to the current chunk
+            if current_text:
+                current_text += " "
+            current_text += text
+            current_indices.append(idx)
+            current_bboxes.append(bbox)  # Store bbox for this text segment
+            current_size += text_size
+            i += 1
+        
+        # Add the last chunk if it has content
+        if current_text:
+            chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
+            
+            # Prepare original_boxes data for the last chunk
+            original_boxes = []
+            for j, bbox_info in enumerate(current_bboxes):
+                if bbox_info:
+                    original_boxes.append({
+                        "original_page_index": page_idx,
+                        "bbox": bbox_info,
+                        "original_index": current_indices[j]
+                    })
+            
+            chunk = {
                 "id": chunk_id,
-                "content": "Combined text content",
+                "content": current_text,
                 "metadata": {
                     "type": "text",
                     "page_idx": page_idx,
-                    "original_indices": [1, 2, 3],  # Example
-                    "original_boxes": []  # Will contain bbox information
+                    "original_indices": current_indices,
+                    "original_boxes": original_boxes  # Add bbox information
                 }
-            })
+            }
+            chunks.append(chunk)
         
         return chunks
     

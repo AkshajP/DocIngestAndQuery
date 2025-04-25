@@ -256,7 +256,6 @@ class MilvusClient:
                 # Convert entities to Milvus format
                 ids = []
                 document_ids = []
-                case_ids = []  # Add this line for case_ids
                 chunk_ids = []
                 contents = []
                 content_types = []
@@ -267,13 +266,9 @@ class MilvusClient:
                 embeddings = []
                 
                 for entity in batch:
-                    # Use the partition we already created
-                    doc_id = entity.document_id
-                    
                     # Extract fields
                     ids.append(entity.id)
-                    document_ids.append(doc_id)
-                    case_ids.append(entity.case_id)  # Add this line for case_ids
+                    document_ids.append(entity.document_id)
                     chunk_ids.append(entity.chunk_id)
                     contents.append(entity.content)
                     content_types.append(entity.content_type)
@@ -287,7 +282,6 @@ class MilvusClient:
                 insert_data = [
                     ids,
                     document_ids,
-                    case_ids,  # Add this line for case_ids
                     chunk_ids,
                     contents,
                     content_types,
