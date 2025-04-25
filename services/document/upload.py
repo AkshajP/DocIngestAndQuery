@@ -68,13 +68,40 @@ def upload_document(
         safe_name = ''.join(c for c in base_name.split('.')[0].replace(' ', '_') 
                           if c.isalnum() or c == '_')
         document_id = f"doc_{timestamp}_{safe_name}"
-    
+    try:
+        # Create document directory path
+        doc_dir = os.path.join(config.storage.storage_dir, document_id)
+        target_filename = "original.pdf"
+        target_path = os.path.join(doc_dir, target_filename)
+        
+        # Create the directory if it doesn't exist
+        storage_adapter.create_directory(doc_dir)
+        
+        # Read the original file as binary
+        with open(file_path, 'rb') as f:
+            file_content = f.read()
+        
+        # Save the file using the storage adapter
+        storage_success = storage_adapter.write_file(file_content, target_path)
+        
+        if not storage_success:
+            logger.warning(f"Failed to save original PDF to {target_path}")
+            stored_pdf_path = file_path  # Fall back to original path
+        else:
+            logger.info(f"Successfully saved original PDF to {target_path}")
+            stored_pdf_path = target_path
+            
+    except Exception as e:
+        logger.error(f"Error saving original PDF: {str(e)}")
+        stored_pdf_path = file_path 
+        
     # Initialize metadata
     doc_metadata = {
         "document_id": document_id,
         "case_id": case_id,
         "original_filename": os.path.basename(file_path),
         "original_file_path": file_path,
+        "stored_file_path": stored_pdf_path,  # Add the path where we stored the file
         "file_type": os.path.splitext(file_path)[1].lower()[1:],
         "processing_start_time": datetime.now().isoformat(),
         "status": "processing",
@@ -88,7 +115,18 @@ def upload_document(
         # Step 1: Extract content from document
         extraction_start_time = time.time()
         logger.info(f"Extracting content from {file_path}")
-        extraction_result = pdf_extractor.extract_content(file_path)
+        
+        # Create document-specific images directory
+        images_dir = os.path.join(doc_dir, "images")
+        storage_adapter.create_directory(images_dir)
+        
+        # Extract content and save images to document-specific directory
+        extraction_result = pdf_extractor.extract_content(
+            file_path, 
+            save_images=True,
+            output_dir=images_dir,
+            storage_adapter=storage_adapter  # Pass storage adapter to use
+        )
         
         if extraction_result["status"] != "success":
             return _handle_processing_failure(
@@ -104,7 +142,9 @@ def upload_document(
         # Update metadata with extraction info
         doc_repository.update_document(document_id, {
             "page_count": page_count,
-            "extraction_time": time.time() - extraction_start_time
+            "extraction_time": time.time() - extraction_start_time,
+            "images_directory": images_dir,
+            "images_count": len(extraction_result.get("images", []))
         })
         
         # Step 2: Chunk the extracted content
@@ -263,7 +303,9 @@ def upload_document(
             "processing_time": total_processing_time,
             "chunks_count": chunks_count,
             "tree_nodes_count": nodes_count,
-            "raptor_levels": raptor_levels
+            "raptor_levels": raptor_levels,
+            "stored_file_path": stored_pdf_path,  # Include the stored file path in the response
+            "images_directory": images_dir  # Include the images directory in the response
         }
         
     except Exception as e:

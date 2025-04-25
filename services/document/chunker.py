@@ -2,7 +2,7 @@ import re
 import logging
 import uuid
 from typing import List, Dict, Any, Optional
-
+import os
 logger = logging.getLogger(__name__)
 
 class Chunker:
@@ -230,28 +230,57 @@ class Chunker:
         Returns:
             List of processed table chunks
         """
-        # Implementation of table processing
-        # Convert HTML tables to structured JSON and text representation
         chunks = []
         
         for item in table_items:
-            # Process table content
-            # Create chunk with appropriate metadata
-            chunk_id = f"table_{uuid.uuid4().hex[:8]}"
-            chunks.append({
+            table_body = item.get("table_body", "")
+            if not table_body:
+                continue
+                
+            # Get table caption
+            table_caption = item.get("table_caption", "")
+            if isinstance(table_caption, list):
+                table_caption = " ".join(table_caption)
+            
+            # Convert HTML table to JSON
+            table_json = self._html_table_to_json(table_body)
+            
+            # Create readable text representation for embedding
+            table_text = self._create_table_text(table_json, table_caption)
+            
+            # Create chunk ID
+            chunk_id = f"table_{item['original_index']}"
+            
+            # Get bbox if available
+            bbox = item.get("bbox")
+            page_idx = item.get("page_idx", 0)
+            
+            # Create original_boxes structure
+            original_boxes = []
+            if bbox:
+                original_boxes.append({
+                    "original_page_index": page_idx,
+                    "bbox": bbox,
+                    "original_index": item["original_index"]
+                })
+            
+            # Create chunk
+            chunk = {
                 "id": chunk_id,
-                "content": "Table content representation",
+                "content": table_text,  # Use text representation as content
                 "metadata": {
                     "type": "table",
-                    "page_idx": item.get("page_idx", 0),
-                    "original_index": item.get("original_index"),
-                    "table_data": {},  # Will contain table structure
-                    "original_boxes": []  # Will contain bbox information
+                    "page_idx": page_idx,
+                    "original_index": item["original_index"],
+                    "caption": table_caption,
+                    "table_data": table_json,  # Store JSON data in metadata
+                    "original_boxes": original_boxes  # Add bbox information
                 }
-            })
+            }
+            chunks.append(chunk)
         
         return chunks
-    
+
     def _process_image_items(self, image_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Process image items.
@@ -263,25 +292,131 @@ class Chunker:
         Returns:
             List of processed image chunks
         """
-        # Implementation of image processing
-        # Create text representations of images with captions
         chunks = []
         
         for item in image_items:
-            # Process image content
-            # Create chunk with appropriate metadata
-            chunk_id = f"image_{uuid.uuid4().hex[:8]}"
-            chunks.append({
+            img_path = item.get("img_path", "")
+            if not img_path:
+                continue
+            
+            # Get image caption
+            img_caption = item.get("img_caption", "")
+            if isinstance(img_caption, list):
+                img_caption = " ".join(img_caption)
+            
+            # Create a textual representation for the image
+            content = f"Image: {os.path.basename(img_path)}\n"
+            if img_caption:
+                content += f"Caption: {img_caption}\n"
+            
+            # Create chunk ID
+            chunk_id = f"image_{item['original_index']}"
+            
+            # Get bbox if available
+            bbox = item.get("bbox")
+            page_idx = item.get("page_idx", 0)
+            
+            # Create original_boxes structure
+            original_boxes = []
+            if bbox:
+                original_boxes.append({
+                    "original_page_index": page_idx,
+                    "bbox": bbox,
+                    "original_index": item["original_index"]
+                })
+            
+            # Create chunk
+            chunk = {
                 "id": chunk_id,
-                "content": "Image caption and description",
+                "content": content,
                 "metadata": {
                     "type": "image",
-                    "page_idx": item.get("page_idx", 0),
-                    "original_index": item.get("original_index"),
-                    "img_path": item.get("img_path", ""),
-                    "caption": item.get("img_caption", ""),
-                    "original_boxes": []  # Will contain bbox information
+                    "page_idx": page_idx,
+                    "original_index": item["original_index"],
+                    "img_path": img_path,
+                    "caption": img_caption,
+                    "original_boxes": original_boxes  # Add bbox information
                 }
-            })
+            }
+            chunks.append(chunk)
         
         return chunks
+    def _html_table_to_json(self, html_table: str) -> Dict[str, Any]:
+        """
+        Convert HTML table to JSON structure.
+        
+        Args:
+            html_table: HTML table string
+            
+        Returns:
+            Dictionary with table data
+        """
+        import re
+        table_json = {"headers": [], "rows": []}
+        
+        # Extract headers (th elements)
+        header_matches = re.findall(r"<th.*?>(.*?)</th>", html_table, re.DOTALL|re.IGNORECASE)
+        if header_matches:
+            table_json["headers"] = [self._clean_html(h) for h in header_matches]
+        
+        # Extract rows (tr elements)
+        row_matches = re.findall(r"<tr.*?>(.*?)</tr>", html_table, re.DOTALL|re.IGNORECASE)
+        for row_html in row_matches:
+            # Skip if this is a header row (contains th)
+            if "<th" in row_html.lower():
+                continue
+                
+            # Extract cells (td elements)
+            cell_matches = re.findall(r"<td.*?>(.*?)</td>", row_html, re.DOTALL|re.IGNORECASE)
+            if cell_matches:
+                row_data = [self._clean_html(c) for c in cell_matches]
+                table_json["rows"].append(row_data)
+        
+        return table_json
+
+    def _clean_html(self, html_text: str) -> str:
+        """
+        Clean HTML text by removing tags and normalizing whitespace.
+        
+        Args:
+            html_text: HTML text to clean
+            
+        Returns:
+            Cleaned text
+        """
+        import re
+        # Remove HTML tags
+        text = re.sub(r"<[^>]+>", "", html_text)
+        # Normalize whitespace
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+    
+    def _create_table_text(self, table_json: Dict[str, Any], caption: str = "") -> str:
+        """
+        Create a textual representation of a table for embedding.
+        
+        Args:
+            table_json: Table data in JSON format
+            caption: Table caption
+            
+        Returns:
+            Textual representation of the table
+        """
+        lines = []
+        
+        # Add caption if available
+        if caption:
+            lines.append(f"Table: {caption}")
+            lines.append("")
+        
+        # Add headers
+        headers = table_json.get("headers", [])
+        if headers:
+            lines.append(" | ".join(headers))
+            lines.append("-" * (sum(len(h) for h in headers) + 3 * (len(headers) - 1)))
+        
+        # Add rows
+        for row in table_json.get("rows", []):
+            lines.append(" | ".join(row))
+        
+        return "\n".join(lines)

@@ -21,7 +21,8 @@ class PDFExtractor:
         """
         self.language = language
     
-    def extract_content(self, pdf_path: str, save_images: bool = True, output_dir: Optional[str] = None) -> Dict[str, Any]:
+    def extract_content(self, pdf_path: str, save_images: bool = True, output_dir: Optional[str] = None, 
+                       storage_adapter=None) -> Dict[str, Any]:
         """
         Extract content from a PDF file using MinerU.
         
@@ -29,6 +30,7 @@ class PDFExtractor:
             pdf_path: Path to the PDF file
             save_images: Whether to save extracted images
             output_dir: Directory to save images (if None, images saved to 'images' dir)
+            storage_adapter: Storage adapter for saving images (if None, saves directly to filesystem)
             
         Returns:
             Dictionary with extracted content and metadata
@@ -51,7 +53,7 @@ class PDFExtractor:
             
             # Save extracted images if requested
             if save_images and images:
-                self._save_images(images, output_dir)
+                self._save_images(images, output_dir, storage_adapter)
             
             logger.info(f"Successfully extracted {len(content_list)} content items and {len(images)} images")
             
@@ -59,39 +61,55 @@ class PDFExtractor:
                 "status": "success",
                 "content_list": content_list,
                 "images": list(images.keys()) if images else [],
-                "page_count": self._count_pages(content_list)
+                "page_count": self._count_pages(content_list),
+                "image_directory": output_dir
             }
             
         except Exception as e:
             logger.error(f"Error extracting PDF content: {str(e)}")
             return {"status": "error", "message": str(e)}
     
-    def _save_images(self, images: Dict[str, bytes], output_dir: Optional[str] = None) -> None:
+    def _save_images(self, images: Dict[str, bytes], output_dir: Optional[str] = None, 
+                    storage_adapter=None) -> None:
         """
-        Save extracted images to disk.
+        Save extracted images to disk or using storage adapter.
         
         Args:
             images: Dictionary of image name to image data
             output_dir: Directory to save images (default: 'images')
+            storage_adapter: Storage adapter for saving images (if None, saves directly to filesystem)
         """
         # Determine output directory
         if not output_dir:
             output_dir = "images"
         
-        # Create directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-        
         # Save each image
         for image_name, image_data in images.items():
             image_path = os.path.join(output_dir, image_name)
             
-            # Create subdirectories if needed
-            os.makedirs(os.path.dirname(image_path), exist_ok=True)
-            
             try:
-                with open(image_path, 'wb') as f:
-                    f.write(image_data)
-                logger.debug(f"Saved image to {image_path}")
+                if storage_adapter:
+                    # Use storage adapter if provided
+                    # Ensure parent directory exists
+                    parent_dir = os.path.dirname(image_path)
+                    if parent_dir:
+                        storage_adapter.create_directory(parent_dir)
+                    
+                    # Write image data
+                    storage_adapter.write_file(image_data, image_path)
+                    logger.debug(f"Saved image to {image_path} using storage adapter")
+                else:
+                    # Direct filesystem access if no adapter provided
+                    # Create subdirectories if needed
+                    parent_dir = os.path.dirname(image_path)
+                    if parent_dir:
+                        os.makedirs(parent_dir, exist_ok=True)
+                    
+                    # Write image data
+                    with open(image_path, 'wb') as f:
+                        f.write(image_data)
+                    logger.debug(f"Saved image to {image_path}")
+                
             except Exception as e:
                 logger.error(f"Error saving image {image_name}: {str(e)}")
     

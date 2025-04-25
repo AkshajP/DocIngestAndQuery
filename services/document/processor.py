@@ -239,7 +239,7 @@ class DocumentProcessor:
         
         if file_ext == '.pdf':
             # Extract PDF content
-            extraction_result = self.pdf_extractor.extract_content(file_path)
+            extraction_result = self.pdf_extractor.extract_content(file_path, output_dir=f'document_store/{document_id}')
             
             if extraction_result["status"] != "success":
                 return {
