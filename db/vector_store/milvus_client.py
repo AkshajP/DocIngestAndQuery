@@ -249,18 +249,22 @@ class MilvusClient:
             total_inserted = 0
             total_entities = len(entities)
             
+            # Debug: Check the first entity's embedding
+            if entities and hasattr(entities[0], 'embedding'):
+                first_emb = entities[0].embedding
+                if first_emb:
+                    logger.info(f"First entity embedding type: {type(first_emb)}, dimension: {len(first_emb) if isinstance(first_emb, list) else 'not a list'}")
+            
             for i in range(0, total_entities, batch_size):
                 # Get current batch
                 batch = entities[i:i+batch_size]
                 
-                # Filter out entities with invalid embeddings
+                # Normalize embeddings - ensure all have correct dimension
                 valid_batch = []
                 for entity in batch:
-                    # Verify embedding has the correct dimension
-                    if entity.embedding and len(entity.embedding) == self.dimension:
-                        valid_batch.append(entity)
-                    else:
-                        logger.warning(f"Skipping entity with invalid embedding: {entity.id}")
+                    # Make a copy to avoid modifying the original
+                    processed_entity = self._process_entity_embedding(entity)
+                    valid_batch.append(processed_entity)
                 
                 if not valid_batch:
                     logger.warning(f"No valid entities in batch {i//batch_size + 1}")
@@ -348,20 +352,60 @@ class MilvusClient:
                     logger.info(f"Inserted batch of {len(valid_batch)} entities ({total_inserted}/{total_entities})")
                 except Exception as batch_error:
                     logger.error(f"Error inserting batch: {batch_error}")
-                    # Log the first entity's embedding shape for debugging
+                    # Log the first entity's embedding information for debugging
                     if embeddings and len(embeddings) > 0:
-                        logger.debug(f"First embedding shape: {len(embeddings[0])}")
+                        logger.debug(f"First embedding length: {len(embeddings[0])}")
+                        logger.debug(f"Embedding dimension should be: {self.dimension}")
                         if isinstance(embeddings[0], list) and len(embeddings[0]) > 0:
                             logger.debug(f"First embedding type: {type(embeddings[0][0])}")
             
             # Flush to ensure data is persisted
-            self.collection.flush()
-            logger.info(f"Successfully inserted {total_inserted} entities")
+            if total_inserted > 0:
+                self.collection.flush()
+                logger.info(f"Successfully inserted {total_inserted} entities")
             
             return total_inserted > 0
         except Exception as e:
             logger.error(f"Error adding entities: {e}")
             return False
+
+    def _process_entity_embedding(self, entity: VectorEntity) -> VectorEntity:
+        """
+        Process an entity's embedding to ensure it has the correct dimension.
+        Creates a new entity to avoid modifying the original.
+        
+        Args:
+            entity: The VectorEntity to process
+            
+        Returns:
+            A new VectorEntity with processed embedding
+        """
+        # Copy entity to avoid modifying the original
+        import copy
+        processed = copy.deepcopy(entity)
+        
+        # Handle embedding issues
+        if not processed.embedding or not isinstance(processed.embedding, list):
+            logger.warning(f"Entity {processed.id} has invalid embedding type, creating zero vector")
+            processed.embedding = [0.0] * self.dimension
+            return processed
+        
+        # Check embedding dimension
+        emb_dim = len(processed.embedding)
+        if emb_dim != self.dimension:
+            logger.warning(f"Entity {processed.id} has dimension mismatch: {emb_dim} != {self.dimension}")
+            
+            # Fix dimension by padding or truncating
+            if emb_dim < self.dimension:
+                # Pad with zeros
+                processed.embedding = processed.embedding + [0.0] * (self.dimension - emb_dim)
+                logger.info(f"Padded embedding for {processed.id} from {emb_dim} to {self.dimension}")
+            else:
+                # Truncate
+                processed.embedding = processed.embedding[:self.dimension]
+                logger.info(f"Truncated embedding for {processed.id} from {emb_dim} to {self.dimension}")
+        
+        return processed
     
     def _extract_hit_field(self, hit, field_name, default=None):
         """

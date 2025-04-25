@@ -52,7 +52,7 @@ class CollectionSchema(BaseModel):
     partition_config: PartitionConfig
     
     @classmethod
-    def default_document_schema(cls, collection_name: str = "document_store", dimension: int = 768) -> "CollectionSchema":
+    def default_document_schema(cls, collection_name: str = "document_store", dimension: int = 3072) -> "CollectionSchema":
         """Create a default schema for document storage"""
         scalar_fields = [
             ScalarField(name="id", field_type="VARCHAR", is_primary=True, max_length=100, 

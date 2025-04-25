@@ -16,7 +16,7 @@ class EmbeddingService:
         model_name: str = "llama3.2",
         base_url: str = "http://localhost:11434",
         batch_size: int = 5,
-        embedding_dim: Optional[int] = 768
+        default_dimension: int = 3072  # Added default dimension
     ):
         """
         Initialize the embedding service.
@@ -25,12 +25,13 @@ class EmbeddingService:
             model_name: Name of the embedding model
             base_url: Base URL for Ollama API
             batch_size: Maximum batch size for embedding generation
+            default_dimension: Default embedding dimension to use if test fails
         """
         self.model_name = model_name
         self.base_url = base_url
         self.batch_size = batch_size
         self.embeddings = None
-        self.embedding_dim = embedding_dim
+        self.embedding_dim = default_dimension  # Initialize with default
         
         # Initialize embeddings client
         self._initialize_embeddings()
@@ -44,13 +45,22 @@ class EmbeddingService:
             )
             
             # Test to get embedding dimension
-            test_embedding = self.generate_embedding("Test embedding dimension")
-            self.embedding_dim = len(test_embedding)
+            try:
+                test_embedding = self.embeddings.embed_query("Test embedding dimension")
+                if test_embedding and len(test_embedding) > 0:
+                    self.embedding_dim = len(test_embedding)
+                    logger.info(f"Detected embedding dimension: {self.embedding_dim}")
+                else:
+                    logger.warning(f"Could not detect embedding dimension, using default: {self.embedding_dim}")
+            except Exception as dim_error:
+                logger.warning(f"Error detecting embedding dimension: {str(dim_error)}")
+                logger.warning(f"Using default dimension: {self.embedding_dim}")
             
             logger.info(f"Initialized embedding service with model {self.model_name}, dimension: {self.embedding_dim}")
         except Exception as e:
             logger.error(f"Error initializing embedding service: {str(e)}")
-            raise
+            # Continue with the default dimension rather than raising
+            logger.warning(f"Using default dimension: {self.embedding_dim}")
     
     def generate_embedding(self, text: str) -> List[float]:
         """
@@ -67,21 +77,24 @@ class EmbeddingService:
         
         try:
             embedding = self.embeddings.embed_query(text)
+            actual_dim = len(embedding)
+            
             # Ensure we have the correct dimension
-            if len(embedding) != self.embedding_dim:
-                logger.warning(f"Embedding dimension mismatch: got {len(embedding)}, expected {self.embedding_dim}")
+            if actual_dim != self.embedding_dim:
+                logger.warning(f"Embedding dimension mismatch: got {actual_dim}, expected {self.embedding_dim}")
                 # Pad or truncate to correct dimension
-                if len(embedding) < self.embedding_dim:
+                if actual_dim < self.embedding_dim:
                     # Pad with zeros
-                    embedding = embedding + [0.0] * (self.embedding_dim - len(embedding))
+                    embedding = embedding + [0.0] * (self.embedding_dim - actual_dim)
                 else:
                     # Truncate
                     embedding = embedding[:self.embedding_dim]
+            
             return embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {str(e)}")
             # Return zero vector as fallback
-            return [0.0] * (self.embedding_dim or 768)
+            return [0.0] * self.embedding_dim
     
     def generate_embeddings_batch(
         self, 
@@ -123,13 +136,7 @@ class EmbeddingService:
                 # Process each text individually for better error handling
                 for text in batch_texts:
                     try:
-                        embedding = self.embeddings.embed_query(text)
-                        # Ensure correct dimension
-                        if len(embedding) != self.embedding_dim:
-                            if len(embedding) < self.embedding_dim:
-                                embedding = embedding + [0.0] * (self.embedding_dim - len(embedding))
-                            else:
-                                embedding = embedding[:self.embedding_dim]
+                        embedding = self.generate_embedding(text)  # Use our improved method
                         batch_embeddings.append(embedding)
                     except Exception as text_error:
                         logger.error(f"Error embedding text: {str(text_error)}")
@@ -148,7 +155,7 @@ class EmbeddingService:
                 zero_vectors = [[0.0] * self.embedding_dim for _ in range(len(batch_texts))]
                 all_embeddings.extend(zero_vectors)
         
-        # Verify all embeddings have the correct dimension
+        # Final verification to ensure all embeddings have the correct dimension
         for i, emb in enumerate(all_embeddings):
             if len(emb) != self.embedding_dim:
                 logger.warning(f"Fixing embedding {i} with wrong dimension: {len(emb)} != {self.embedding_dim}")

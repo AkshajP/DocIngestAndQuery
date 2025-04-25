@@ -79,6 +79,7 @@ class VectorStoreAdapter:
             return 0
         
         entities = []
+        skipped_chunks = 0
         
         for chunk in chunks:
             chunk_id = chunk["id"]
@@ -88,9 +89,16 @@ class VectorStoreAdapter:
             # Get embedding for this chunk
             if chunk_id not in embeddings:
                 logger.warning(f"No embedding found for chunk {chunk_id} in document {document_id}")
+                skipped_chunks += 1
                 continue
             
             embedding = embeddings[chunk_id]
+            
+            # Check if embedding is valid
+            if not embedding or not isinstance(embedding, list):
+                logger.warning(f"Invalid embedding for chunk {chunk_id} in document {document_id}")
+                skipped_chunks += 1
+                continue
             
             # Determine content type and page number
             content_type = metadata.get("type", "text")
@@ -99,32 +107,45 @@ class VectorStoreAdapter:
             # Preserve original bounding boxes if available
             original_boxes = metadata.get("original_boxes", [])
             
-            # Create entity
-            entity = create_vector_entity(
-                document_id=document_id,
-                chunk_id=chunk_id,
-                content=content,
-                embedding=embedding,
-                case_id=case_id,  # Required case_id
-                content_type=content_type,
-                chunk_type="original",  # Original document chunk
-                page_number=page_number,
-                tree_level=0,  # Base level for original chunks
-                metadata={
-                    **metadata,
-                    "original_boxes": original_boxes
-                }
-            )
+            # Log some details about this chunk
+            logger.debug(f"Processing chunk {chunk_id}, type: {content_type}, embedding length: {len(embedding)}")
             
-            entities.append(entity)
+            # Create entity
+            try:
+                entity = create_vector_entity(
+                    document_id=document_id,
+                    chunk_id=chunk_id,
+                    content=content,
+                    embedding=embedding,
+                    case_id=case_id,  # Required case_id
+                    content_type=content_type,
+                    chunk_type="original",  # Original document chunk
+                    page_number=page_number,
+                    tree_level=0,  # Base level for original chunks
+                    metadata={
+                        **metadata,
+                        "original_boxes": original_boxes
+                    }
+                )
+                
+                entities.append(entity)
+            except Exception as e:
+                logger.error(f"Error creating entity for chunk {chunk_id}: {str(e)}")
+                skipped_chunks += 1
+        
+        if not entities:
+            logger.error(f"No valid entities created for document {document_id}")
+            return 0
         
         # Add entities to vector store
+        logger.info(f"Adding {len(entities)} entities to vector store for document {document_id}")
         success = self.client.add_entities(entities)
         
         if not success:
             logger.error(f"Failed to add chunks for document {document_id}")
             return 0
         
+        logger.info(f"Successfully added {len(entities)} chunks for document {document_id} (skipped {skipped_chunks})")
         return len(entities)
     
     def add_tree_nodes(

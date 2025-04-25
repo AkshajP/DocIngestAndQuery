@@ -6,7 +6,7 @@
       "host": "localhost",
       "port": "19530",
       "collection_name": "document_store",
-      "dimension": 768,
+      "dimension": 3072,
       "partition_strategy": "document_id"
     },
     "ollama": {

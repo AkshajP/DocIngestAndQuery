@@ -38,7 +38,7 @@ def upload_document(
     logger.info("First log")
     # Setup components
     config = config or get_config()
-    start_time = time.time()
+    process_start_time = time.time()
     
     # Initialize services
     storage_adapter = _initialize_storage_adapter(config)
@@ -86,6 +86,7 @@ def upload_document(
     
     try:
         # Step 1: Extract content from document
+        extraction_start_time = time.time()
         logger.info(f"Extracting content from {file_path}")
         extraction_result = pdf_extractor.extract_content(file_path)
         
@@ -103,10 +104,11 @@ def upload_document(
         # Update metadata with extraction info
         doc_repository.update_document(document_id, {
             "page_count": page_count,
-            "extraction_time": time.time() - start_time
+            "extraction_time": time.time() - extraction_start_time
         })
         
         # Step 2: Chunk the extracted content
+        chunking_start_time = time.time()
         logger.info(f"Chunking document content for {document_id}")
         chunks = chunker.chunk_content(content_list)
         
@@ -126,7 +128,7 @@ def upload_document(
                 content_types[chunk_type] = 0
             content_types[chunk_type] += 1
         
-        chunking_time = time.time() - start_time
+        chunking_time = time.time() - chunking_start_time
         
         # Update metadata with chunking info
         doc_repository.update_document(document_id, {
@@ -137,7 +139,7 @@ def upload_document(
         
         # Step 3: Generate embeddings for chunks
         logger.info(f"Generating embeddings for {len(chunks)} chunks")
-        
+        embedding_start_time = time.time()
         # Prepare texts dictionary with chunk IDs and contents
         texts_dict = {chunk["id"]: chunk["content"] for chunk in chunks}
         
@@ -155,7 +157,7 @@ def upload_document(
                 "Failed to generate embeddings"
             )
         
-        embedding_time = time.time() - start_time - chunking_time
+        embedding_time = time.time() - embedding_start_time
         
         # Update metadata with embedding info
         doc_repository.update_document(document_id, {
@@ -163,6 +165,7 @@ def upload_document(
         })
         
         # Step 4: Build RAPTOR tree
+        raptor_start_time = time.time()
         logger.info(f"Building RAPTOR tree for document {document_id}")
         
         # Format chunks for RAPTOR
@@ -207,8 +210,11 @@ def upload_document(
             show_progress=True
         )
         
-        tree_build_time = time.time() - start_time - chunking_time - embedding_time
+        tree_build_time = time.time() - raptor_start_time
         
+        doc_repository.update_document(document_id, {
+            "raptor_tree_build_time": tree_build_time
+        })
         # Step 5: Store document chunks and tree in vector database
         logger.info(f"Storing document chunks and tree nodes in vector database")
         
@@ -237,13 +243,13 @@ def upload_document(
         )
         
         # Calculate total processing time
-        total_processing_time = time.time() - start_time
+        total_processing_time = time.time() - process_start_time
         
         # Update document metadata with success status
         raptor_levels = sorted(list(tree_data.keys()))
         doc_repository.update_document(document_id, {
             "status": "processed",
-            "processing_time": total_processing_time,
+            "total_processing_time": total_processing_time,
             "raptor_levels": raptor_levels,
             "processing_date": datetime.now().isoformat()
         })

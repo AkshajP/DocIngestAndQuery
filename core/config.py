@@ -13,7 +13,7 @@ class VectorDBConfig(BaseModel):
     username: Optional[str] = None
     password: Optional[str] = None
     collection_name: str = "document_store"
-    dimension: int = 768  # Default embedding dimension
+    dimension: int = 3072  # Default embedding dimension
     partition_strategy: str = "document_id"  # How to partition data
 
 
