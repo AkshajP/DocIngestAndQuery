@@ -50,6 +50,16 @@ class ProcessingConfig(BaseModel):
     language: str = "en"
 
 
+class DatabaseConfig(BaseModel):
+    """Configuration for PostgreSQL database"""
+    host: str = "localhost"
+    port: str = "5433"
+    dbname: str = "yourdb"
+    user: str = "youruser"
+    password: str = "yourpassword"
+    connection_timeout: int = 30
+
+
 class AppConfig(BaseModel):
     """Main application configuration"""
     app_name: str = "Document RAG API"
@@ -59,6 +69,7 @@ class AppConfig(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     
     @classmethod
     def from_json(cls, file_path: str) -> "AppConfig":

@@ -54,3 +54,13 @@ Please continue the implementation by:
 4. Maintaining the same emphasis on robust error handling and type safety
 
 Let me know if any specific component should be prioritized or if you'd like to see additional details about any part of the existing code.
+
+
+
+ - Input and output tokens count differently in `query_engine.py`
+ - parametrise flat, tree searches and summary and original chunk filters
+ - handling of clear history 
+- _is_relevant_to_query method using embedding
+
+case user role documents
+

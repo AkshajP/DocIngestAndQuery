@@ -135,3 +135,88 @@ class UserListResponse(BaseModel):
     """Response with user information"""
     users: List[UserInfo]
     pagination: Dict[str, int]
+    
+import logging
+from typing import List, Dict, Any, Optional, Union
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+class RetrievalParams(BaseModel):
+    """Parameters for retrieval operations"""
+    query: str
+    case_id: str
+    document_ids: List[str]
+    use_tree: bool = False
+    top_k: int = 5
+    
+    @property
+    def retrieval_method(self) -> str:
+        """Get the retrieval method name"""
+        return "tree" if self.use_tree else "flat"
+
+class ProcessingStats(BaseModel):
+    """Statistics for query processing"""
+    retrieval_time: float = 0.0
+    llm_time: float = 0.0
+    total_time: float = 0.0
+    token_count: int = 0
+    model_used: Optional[str] = None
+    retrieval_method: str = "flat"
+    chunks_retrieved: int = 0
+
+class ChunkSource(BaseModel):
+    """Source information from a retrieved chunk"""
+    document_id: str
+    content: str
+    score: float
+    content_type: str = "text"
+    page_number: Optional[int] = None
+    tree_level: Optional[int] = None
+    original_boxes: Optional[List[Dict[str, Any]]] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class QueryResult(BaseModel):
+    """Result of a query operation"""
+    status: str
+    answer: str
+    sources: List[ChunkSource] = Field(default_factory=list)
+    stats: ProcessingStats = Field(default_factory=ProcessingStats)
+    message: Optional[str] = None
+
+class TreeNode(BaseModel):
+    """Node in the RAPTOR tree structure"""
+    node_id: str
+    content: str
+    level: int
+    parent_id: Optional[str] = None
+    children: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    embedding: Optional[List[float]] = None
+
+class HistoryItem(BaseModel):
+    """Item in chat history"""
+    role: str
+    content: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+class ChatHistory(BaseModel):
+    """Container for chat history"""
+    items: List[HistoryItem] = Field(default_factory=list)
+    summary: Optional[str] = None
+    
+    def format_for_prompt(self) -> str:
+        """Format chat history for inclusion in a prompt"""
+        if not self.items:
+            return ""
+            
+        if self.summary:
+            history = f"Previous conversation summary: {self.summary}\n\n"
+        else:
+            history = "Previous conversation:\n\n"
+            
+        for item in self.items:
+            role_name = "Human" if item.role == "user" else "Assistant"
+            history += f"{role_name}: {item.content}\n\n"
+            
+        return history

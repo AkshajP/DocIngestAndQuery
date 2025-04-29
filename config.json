@@ -1,6 +1,6 @@
 {
     "app_name": "Document RAG API",
-    "debug": false,
+    "debug": true,
     "log_level": "INFO",
     "vector_db": {
       "host": "localhost",
