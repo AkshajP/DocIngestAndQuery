@@ -28,6 +28,19 @@ services:
       timeout: 20s
       retries: 3
 
+  postgres:
+    container_name: postgres
+    image: postgres:15
+    environment:
+      POSTGRES_USER: youruser
+      POSTGRES_PASSWORD: yourpassword
+      POSTGRES_DB: yourdb
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+
   standalone:
     container_name: milvus-standalone
     image: milvusdb/milvus:v2.3.3
@@ -43,8 +56,33 @@ services:
     depends_on:
       - "etcd"
       - "minio"
+      
+    
+  pgadmin:
+    container_name: pgadmin
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: adminpassword
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/pgadmin:/var/lib/pgadmin
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+  attu:
+    image: zilliz/attu:latest
+    environment:
+      - MILVUS_URL=http://standalone:19530
+    ports:
+      - "8000:3000"
+    depends_on:
+      - standalone
 
 volumes:
   etcd:
   minio:
   milvus:
+  postgres:
+  pgadmin:
