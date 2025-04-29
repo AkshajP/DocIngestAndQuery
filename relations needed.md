@@ -1,12 +1,28 @@
 # Todo
 
 - [x] Get idea for code structure and architecture for refractoring to new modular enterprise grade structure
-- [ ] Create Pydantic Models for passing contexts (UserContext, LLMResponse, Prompt, etc)
-- [ ] Try getting all configs from one json file (embedding model, dimension, LLMmodel, chunk size, dbname)
-- [ ] Move to schema with additional explicit fields for vector database for easy filtering (including chunk_text, chunk_type (real, synthetic), page_number, chunk_type (text, table, image), chunk)
+- [x] Create Pydantic Models for passing contexts (UserContext, LLMResponse, Prompt, etc)
+- [x] Try getting all configs from one json file (embedding model, dimension, LLMmodel, chunk size, dbname)
+- [x] Move to schema with additional explicit fields for vector database for easy filtering (including chunk_text, chunk_type (real, synthetic), page_number, chunk_type (text, table, image), chunk)
+- [x] Refractor to save embeddings to vector store with partition (collection > partition > entity(embedding))
 - [ ] Hardcode outputs for some dependent steps to stub to move forward with project
-- [ ] Refractor to save embeddings to vector store with partition (collection > partition > entity(embedding))
 - [ ] Discuss tool choices (celery +redis/rabbitmq, etc)
+
+---
+
+docs it parallely
+logs research  - logging for what?
+getting query part up on API architecture
+schema and data model to use
+context to get from dash
+api access parameters
+
+---
+
+Process
+RAG->intf->add history feat->modify retriever (for docs)->modify retriever (graph)
+
+---
 
 ```s
 document_rag_api/
@@ -66,6 +82,9 @@ document_rag_api/
 ├── docker-compose.yml
 └── config.json                            # Centralized config
 ```
+
+User role 
+
 
 ```json
 {

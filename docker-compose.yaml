@@ -57,6 +57,20 @@ services:
       - "etcd"
       - "minio"
       
+    
+  pgadmin:
+    container_name: pgadmin
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: adminpassword
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/pgadmin:/var/lib/pgadmin
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
   attu:
     image: zilliz/attu:latest
     environment:
@@ -71,3 +85,4 @@ volumes:
   minio:
   milvus:
   postgres:
+  pgadmin:
