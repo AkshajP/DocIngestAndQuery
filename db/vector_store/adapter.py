@@ -168,16 +168,23 @@ class VectorStoreAdapter:
             Number of nodes successfully added
         """
         entities = []
+        MAX_TEXT_LENGTH = 65000  # Safe limit below 65535
+        split_nodes_count = 0
+        original_nodes_count = 0
+        
+        # Initialize embedding service for potential new embeddings needed for split nodes
+        from services.ml.embeddings import EmbeddingService
+        embedding_service = None  # Lazy initialize only if needed
         
         for level, level_data in tree_data.items():
             # Skip level 0 as those are original chunks
             if level <= 0:
                 continue
-                
+                    
             summaries_df = level_data.get("summaries_df")
             if summaries_df is None:
                 continue
-                
+                    
             # Process each summary
             for _, row in summaries_df.iterrows():
                 summary_text = row.get("summaries", "")
@@ -185,6 +192,8 @@ class VectorStoreAdapter:
                 
                 if not summary_text:
                     continue
+                
+                original_nodes_count += 1
                 
                 # Create node ID
                 node_id = f"summary_l{level}_c{cluster_id}"
@@ -196,29 +205,88 @@ class VectorStoreAdapter:
                 
                 embedding = tree_embeddings[node_id]
                 
-                # Create entity
-                entity = create_vector_entity(
-                    document_id=document_id,
-                    chunk_id=node_id,
-                    content=summary_text,
-                    embedding=embedding,
-                    case_id=case_id,  # Required case_id
-                    content_type="text",
-                    chunk_type="summary",
-                    page_number=None,
-                    tree_level=level,
-                    metadata={
-                        "cluster": cluster_id
-                    }
-                )
-                
-                entities.append(entity)
+                # Check if summary needs to be split due to length
+                if len(summary_text) > MAX_TEXT_LENGTH:
+                    logger.info(f"Summary for node {node_id} exceeds max length ({len(summary_text)} chars). Splitting...")
+                    
+                    # Split into semantic chunks (paragraphs first, then sentences if needed)
+                    summary_chunks = self._intelligently_split_summary(summary_text, MAX_TEXT_LENGTH)
+                    
+                    # Create multiple nodes with index suffixes
+                    for i, chunk in enumerate(summary_chunks):
+                        # Create unique node ID with chunk index
+                        chunk_node_id = f"{node_id}_p{i}"
+                        
+                        # For first chunk, use the original embedding
+                        # For additional chunks, generate new embeddings
+                        chunk_embedding = None
+                        if i == 0:
+                            chunk_embedding = embedding
+                        else:
+                            # Lazy initialize the embedding service
+                            if embedding_service is None:
+                                embedding_service = EmbeddingService(
+                                    model_name=self.config.ollama.embed_model,
+                                    base_url=self.config.ollama.base_url
+                                )
+                            
+                            # Generate embedding for this chunk
+                            try:
+                                chunk_embedding = embedding_service.generate_embedding(chunk)
+                            except Exception as e:
+                                logger.error(f"Error generating embedding for split node {chunk_node_id}: {str(e)}")
+                                # Fall back to using the original embedding
+                                chunk_embedding = embedding
+                        
+                        # Create entity with reference to other chunks
+                        entity = create_vector_entity(
+                            document_id=document_id,
+                            chunk_id=chunk_node_id,
+                            content=chunk,
+                            embedding=chunk_embedding,
+                            case_id=case_id,
+                            content_type="text",
+                            chunk_type="summary",
+                            page_number=None,
+                            tree_level=level,
+                            metadata={
+                                "cluster": cluster_id,
+                                "is_split": True,
+                                "split_index": i,
+                                "total_splits": len(summary_chunks),
+                                "original_node_id": node_id
+                            }
+                        )
+                        
+                        entities.append(entity)
+                        split_nodes_count += 1
+                else:
+                    # Regular case - no splitting needed
+                    entity = create_vector_entity(
+                        document_id=document_id,
+                        chunk_id=node_id,
+                        content=summary_text,
+                        embedding=embedding,
+                        case_id=case_id,
+                        content_type="text",
+                        chunk_type="summary",
+                        page_number=None,
+                        tree_level=level,
+                        metadata={
+                            "cluster": cluster_id
+                        }
+                    )
+                    
+                    entities.append(entity)
+        
+        if split_nodes_count > 0:
+            logger.info(f"Split {split_nodes_count - original_nodes_count} oversized nodes into {split_nodes_count} semantic chunks")
         
         # Add entities to vector store
         if not entities:
             logger.warning(f"No tree nodes to add for document {document_id}")
             return 0
-            
+                
         success = self.client.add_entities(entities)
         
         if not success:
@@ -335,3 +403,77 @@ class VectorStoreAdapter:
         """Release resources"""
         if hasattr(self, "client"):
             self.client.release()
+
+    def _intelligently_split_summary(self, summary_text: str, max_length: int = 65000) -> List[str]:
+        """
+        Split a long summary into semantically meaningful chunks that fit within database limits.
+        
+        Args:
+            summary_text: The original summary text
+            max_length: Maximum allowed length
+            
+        Returns:
+            List of summary chunks that each fit within the limit
+        """
+        if len(summary_text) <= max_length:
+            return [summary_text]
+        
+        # First try splitting by paragraphs (double newlines)
+        chunks = []
+        paragraphs = summary_text.split("\n\n")
+        
+        current_chunk = ""
+        for paragraph in paragraphs:
+            # If adding this paragraph would exceed the limit, start a new chunk
+            if len(current_chunk) + len(paragraph) + 2 > max_length:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                
+                # If a single paragraph is too long, split by sentences
+                if len(paragraph) > max_length:
+                    sentences = self._split_into_sentences(paragraph)
+                    sentence_chunks = []
+                    
+                    current_sentence_chunk = ""
+                    for sentence in sentences:
+                        if len(current_sentence_chunk) + len(sentence) + 1 > max_length:
+                            if current_sentence_chunk:
+                                sentence_chunks.append(current_sentence_chunk)
+                            
+                            # If a single sentence is still too long, we have to split arbitrarily
+                            if len(sentence) > max_length:
+                                for i in range(0, len(sentence), max_length):
+                                    sentence_chunks.append(sentence[i:i+max_length])
+                            else:
+                                current_sentence_chunk = sentence
+                        else:
+                            current_sentence_chunk += " " + sentence if current_sentence_chunk else sentence
+                    
+                    if current_sentence_chunk:
+                        sentence_chunks.append(current_sentence_chunk)
+                    
+                    chunks.extend(sentence_chunks)
+                else:
+                    current_chunk = paragraph
+            else:
+                current_chunk += "\n\n" + paragraph if current_chunk else paragraph
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        logger.info(f"Split long summary into {len(chunks)} semantic chunks")
+        return chunks
+
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences."""
+        import re
+        # Pattern for finding sentence boundaries
+        sentence_pattern = re.compile(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s')
+        sentences = sentence_pattern.split(text)
+        return [s.strip() for s in sentences if s.strip()]
+    
+    def _get_embedding_for_text(self, text: str) -> List[float]:
+        """Generate embedding for a text chunk."""
+        from services.ml.embeddings import EmbeddingService
+        embedding_service = EmbeddingService()  # Or get from a service locator
+        return embedding_service.generate_embedding(text)

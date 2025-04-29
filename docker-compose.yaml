@@ -71,6 +71,7 @@ services:
       - "8080:80"
     depends_on:
       - postgres
+      
   attu:
     image: zilliz/attu:latest
     environment:

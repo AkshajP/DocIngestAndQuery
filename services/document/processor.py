@@ -355,15 +355,6 @@ class DocumentProcessor:
     ) -> Dict[str, Any]:
         """
         Build RAPTOR hierarchical tree structure.
-        
-        Args:
-            chunks: List of document chunks
-            embeddings: Dictionary mapping chunk IDs to embeddings
-            document_id: Document ID
-            case_id: Case ID
-            
-        Returns:
-            Dictionary with tree building results
         """
         start_time = time.time()
         
@@ -371,9 +362,17 @@ class DocumentProcessor:
         chunk_texts = [chunk["content"] for chunk in chunks]
         chunk_ids = [chunk["id"] for chunk in chunks]
         
-        # Pass to RAPTOR for tree building
+        # Extract content types for filtering
+        content_types = [chunk.get("metadata", {}).get("type", "text") for chunk in chunks]
+        
+        # Pass to RAPTOR for tree building with content types
         try:
-            tree_data = self.raptor.build_tree(chunk_texts, chunk_ids, embeddings)
+            tree_data = self.raptor.build_tree(
+                chunk_texts, 
+                chunk_ids, 
+                embeddings,
+                content_types=content_types  # Pass content types for filtering
+            )
             
             # Generate embeddings for tree nodes
             tree_nodes = {}

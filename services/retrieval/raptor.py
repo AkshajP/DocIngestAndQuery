@@ -31,47 +31,49 @@ class Raptor:
         self.random_seed = random_seed
         self.max_tree_levels = max_tree_levels
         
-        # LLM for summarization
+        # LLM for summarization - increase temperature slightly for better creativity
         self.llm = OllamaLLM(
             model=ollama_model,
             base_url=ollama_base_url,
-            temperature=0.1,
-            max_tokens=1000
+            temperature=0.3,  # Increased from 0.1 to allow more flexibility
+            max_tokens=2000
         )
         
-        # Summarization prompt
+        # Improved summarization prompt
         self.summary_prompt = PromptTemplate(
             template="""
-            Create a comprehensive and detailed summary of the following document sections.
-            Each section is marked with a header indicating its type and source. 
-            Prioritise correct information such that it can be used effectively by downstream systems.
+            You are creating a level {level} summary in a hierarchical document summarization system.
             
-            Important guidelines:
-            1. Maintain key information, important details, and overall context
-            2. Pay special attention to TEXT sections which contain the primary content
-            3. Include important information from TABLE sections in a structured format
-            4. Incorporate previous SUMMARY sections to maintain hierarchical knowledge
-            5. Focus on factual information and key concepts
-            6. Ensure the summary is coherent, well-structured, and preserves the relationships between concepts
-            7. If there is no usable content like only a structure for a blank table or image names, etc then return only the content that you think will be useful for further processing (for ex: just say blank table or image name mentioned)
+            Your task is to synthesize the following content into a comprehensive, coherent, and factual summary.
             
-            Do not include any additional commentary or explanations beyond what's requested above or refer to the context in the answer answer.
+            Key requirements:
+            1. Create a structured, detailed summary that maintains critical information
+            2. Focus primarily on factual content, key concepts, and important details
+            3. If summarizing previous summaries (higher levels), integrate and connect concepts
+            4. Maintain professional, clear language appropriate for knowledge retrieval
+            5. Include specific facts, figures, and technical details when present
+            6. Organize information logically with appropriate transitions
             
-            Document Sections:
+            CRITICAL INSTRUCTION: Always produce a substantive summary focused on the content. 
+            Never include meta-commentary about what you're doing, never say "there is no data" 
+            or "there is no usable content," and never reference yourself or the task itself.
+            
+            Content to summarize:
             {context}
             
             Summary:
             """,
-            input_variables=["context"]
+            input_variables=["context", "level"]
         )
         
         logger.info("RAPTOR initialization complete")
-    
+
     def build_tree(
         self, 
         texts: List[str], 
         chunk_ids: List[str],
-        embeddings: Dict[str, List[float]]
+        embeddings: Dict[str, List[float]],
+        content_types: Optional[List[str]] = None
     ) -> Dict[int, Dict[str, Any]]:
         """
         Build RAPTOR tree from texts and embeddings.
@@ -80,7 +82,8 @@ class Raptor:
             texts: List of text chunks
             chunk_ids: List of chunk IDs corresponding to texts
             embeddings: Dictionary mapping chunk IDs to embeddings
-            
+            content_types: Optional list of content types for each chunk. If provided, will filter out image chunks
+                
         Returns:
             Dictionary with tree structure at each level
         """
@@ -89,9 +92,33 @@ class Raptor:
         if not texts or len(texts) != len(chunk_ids):
             logger.error("Invalid input: texts and chunk_ids must be non-empty and of same length")
             return {}
+        
+        # Filter out image chunks if content_types is provided
+        if content_types and len(content_types) == len(texts):
+            # Create a list of indices to keep (non-image chunks)
+            valid_indices = [i for i, content_type in enumerate(content_types) 
+                            if content_type != "image"]
             
-        # Create embedding array from dictionary
-        embedding_list = [embeddings[chunk_id] for chunk_id in chunk_ids]
+            if len(valid_indices) < len(texts):
+                filtered_texts = [texts[i] for i in valid_indices]
+                filtered_chunk_ids = [chunk_ids[i] for i in valid_indices]
+                
+                # Create filtered embedding array
+                filtered_embedding_list = [embeddings[chunk_id] for chunk_id in filtered_chunk_ids]
+                
+                logger.info(f"Filtered out {len(texts) - len(filtered_texts)} image chunks, "
+                        f"processing {len(filtered_texts)} text/table chunks")
+                
+                texts = filtered_texts
+                chunk_ids = filtered_chunk_ids
+                embedding_list = filtered_embedding_list
+            else:
+                # No image chunks found, proceed with original data
+                embedding_list = [embeddings[chunk_id] for chunk_id in chunk_ids]
+        else:
+            # No content_types provided, use all chunks
+            embedding_list = [embeddings[chunk_id] for chunk_id in chunk_ids]
+        
         embedding_array = np.array(embedding_list)
         
         # Build tree recursively
@@ -195,7 +222,7 @@ class Raptor:
             formatted_txt = f"--- LEVEL {level-1} TEXT ---\n\n{texts[0]}"
             try:
                 summary_chain = self.summary_prompt | self.llm | StrOutputParser()
-                summary = summary_chain.invoke({"context": formatted_txt})
+                summary = summary_chain.invoke({"context": formatted_txt, "level": level})
                 logger.debug(f"Generated summary for single text at level {level}")
             except Exception as e:
                 logger.error(f"Error generating summary: {str(e)}")
@@ -236,7 +263,7 @@ class Raptor:
             try:
                 # Generate summary
                 summary_chain = self.summary_prompt | self.llm | StrOutputParser()
-                summary = summary_chain.invoke({"context": formatted_txt})
+                summary = summary_chain.invoke({"context": formatted_txt, "level": level})
                 summaries.append(summary)
                 cluster_ids.append(cluster_id)
                 logger.debug(f"Generated summary for cluster {cluster_id} at level {level}")
@@ -348,7 +375,14 @@ class Raptor:
         formatted_text = ""
         
         for i, text in enumerate(texts):
-            section_header = f"--- SECTION {i+1} LEVEL {level-1} TEXT ---"
+            # Determine if this is from a previous summary level
+            if level > 1 and "summary of" in text.lower()[:50]:
+                section_header = f"--- PREVIOUS SUMMARY {i+1} ---"
+            else:
+                section_header = f"--- CONTENT SECTION {i+1} ---"
+            
             formatted_text += f"{section_header}\n\n{text}\n\n"
         
         return formatted_text
+    
+    
