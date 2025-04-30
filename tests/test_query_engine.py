@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# tests/test_query_engine.py
 """
 Test script to verify that the Query Engine and related components work correctly.
 """
@@ -57,6 +57,9 @@ def test_query_engine():
     print(f"Processing Time: {result['time_taken']:.2f}s")
     print(f"Answer: {result['answer'][:100]}..." if len(result['answer']) > 100 else result['answer'])
     print(f"Sources: {len(result['sources'])}")
+    print(f"Input Tokens: {result.get('input_tokens', 'N/A')}")
+    print(f"Output Tokens: {result.get('output_tokens', 'N/A')}")
+    print(f"Model Used: {result.get('model_used', 'N/A')}")
     
     # Test tree-based retrieval
     print("\nTesting tree-based retrieval...")
@@ -73,6 +76,57 @@ def test_query_engine():
     print(f"Processing Time: {result['time_taken']:.2f}s")
     print(f"Answer: {result['answer'][:100]}..." if len(result['answer']) > 100 else result['answer'])
     print(f"Sources: {len(result['sources'])}")
+    
+    # Test filtering for original chunks only
+    print("\nTesting retrieval with original chunks only...")
+    
+    result_original = query_engine.query(
+        question=question,
+        case_id=case_id,
+        document_ids=document_ids,
+        use_tree=False,
+        top_k=5,
+        tree_level_filter=[0]  # Only original chunks
+    )
+    
+    print(f"\nQuery Status: {result_original['status']}")
+    print(f"Sources: {len(result_original['sources'])}")
+    original_count = sum(1 for s in result_original['sources'] if s.get('tree_level', 0) == 0)
+    summary_count = sum(1 for s in result_original['sources'] if s.get('tree_level', 0) > 0)
+    print(f"Original Chunks: {original_count}, Summary Chunks: {summary_count}")
+    
+    # Test filtering for summary chunks only
+    print("\nTesting retrieval with summary chunks only...")
+    
+    result_summary = query_engine.query(
+        question=question,
+        case_id=case_id,
+        document_ids=document_ids,
+        use_tree=False,
+        top_k=5,
+        tree_level_filter=[1, 2, 3]  # Only summary chunks
+    )
+    
+    print(f"\nQuery Status: {result_summary['status']}")
+    print(f"Sources: {len(result_summary['sources'])}")
+    original_count = sum(1 for s in result_summary['sources'] if s.get('tree_level', 0) == 0)
+    summary_count = sum(1 for s in result_summary['sources'] if s.get('tree_level', 0) > 0)
+    print(f"Original Chunks: {original_count}, Summary Chunks: {summary_count}")
+    
+    # Test model override
+    print("\nTesting model override...")
+    
+    result_model = query_engine.query(
+        question=question,
+        case_id=case_id,
+        document_ids=document_ids,
+        use_tree=False,
+        top_k=5,
+        model_override="mistral"  # Use different model
+    )
+    
+    print(f"\nQuery Status: {result_model['status']}")
+    print(f"Model Used: {result_model.get('model_used', 'N/A')}")
     
     return result
 
@@ -119,15 +173,22 @@ def test_chat_flow():
         question=question,
         case_id=case_id,
         document_ids=document_ids,
-        chat_id=chat.chat_id,
-        user_id=user_id,
         use_tree=False,
         top_k=3,
         chat_history=chat_history
     )
     
+    # Print token information
+    print(f"Input Tokens: {result.get('input_tokens', 'N/A')}")
+    print(f"Output Tokens: {result.get('output_tokens', 'N/A')}")
+    
     # 3. Add interaction to history
     print("\n3. Adding interaction to history...")
+    # Ensure token count is an integer
+    input_tokens = int(result.get('input_tokens', 0))
+    output_tokens = int(result.get('output_tokens', 0))
+    total_tokens = input_tokens + output_tokens
+
     user_msg, assistant_msg = history_service.add_interaction(
         chat_id=chat.chat_id,
         user_id=user_id,
@@ -135,7 +196,7 @@ def test_chat_flow():
         question=question,
         answer=result["answer"],
         sources=result["sources"],
-        token_count=result.get("token_count"),
+        token_count=total_tokens,  # Ensure this is an integer
         model_used=result.get("model_used"),
         response_time=int(result.get("time_taken", 0) * 1000)  # Convert to ms
     )
@@ -166,7 +227,7 @@ def test_chat_flow():
     print(f"Added feedback: {feedback.id}")
     
     # 6. Send a follow-up query
-    print("\n6. Sending follow-up query...")
+    print("\n6. Sending follow-up query with summary-only retrieval...")
     follow_up = "What was my previous question"
     
     # Get updated history
@@ -176,19 +237,22 @@ def test_chat_flow():
         case_id=case_id
     )
     
-    # Process follow-up query
+    # Process follow-up query with summary-only retrieval
     result = query_engine.query(
         question=follow_up,
         case_id=case_id,
         document_ids=document_ids,
-        chat_id=chat.chat_id,
-        user_id=user_id,
         use_tree=True,  # Try tree-based retrieval
         top_k=3,
-        chat_history=chat_history
+        chat_history=chat_history,
+        tree_level_filter=[1, 2, 3]  # Use only summary chunks
     )
     
     # Add to history
+    input_tokens = int(result.get('input_tokens', 0))
+    output_tokens = int(result.get('output_tokens', 0))
+    total_tokens = input_tokens + output_tokens
+
     history_service.add_interaction(
         chat_id=chat.chat_id,
         user_id=user_id,
@@ -196,13 +260,18 @@ def test_chat_flow():
         question=follow_up,
         answer=result["answer"],
         sources=result["sources"],
-        token_count=result.get("token_count"),
+        token_count=total_tokens,  # Ensure this is an integer
         model_used=result.get("model_used"),
         response_time=int(result.get("time_taken", 0) * 1000)
     )
     
     print("\nFollow-up query result:")
     print(f"Answer: {result['answer'][:100]}..." if len(result['answer']) > 100 else result['answer'])
+    
+    # Count source types
+    original_count = sum(1 for s in result['sources'] if s.get('tree_level', 0) == 0)
+    summary_count = sum(1 for s in result['sources'] if s.get('tree_level', 0) > 0)
+    print(f"Sources: Original Chunks: {original_count}, Summary Chunks: {summary_count}")
     
     # 7. Generate a title based on the conversation
     print("\n7. Generating title based on conversation...")

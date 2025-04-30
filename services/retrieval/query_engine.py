@@ -20,35 +20,45 @@ class QueryEngine:
     Supports both flat and hierarchical retrieval methods.
     """
     
-    def __init__(self, config=None):
+    def __init__(
+        self,
+        config=None,
+        vector_store=None,
+        embeddings=None,
+        llm=None
+    ):
         """
-        Initialize the query engine.
+        Initialize the query engine with required components.
         
         Args:
-            config: Optional configuration override
+            config: Configuration object
+            vector_store: Optional VectorStoreAdapter instance
+            embeddings: Optional embeddings model
+            llm: Optional language model
         """
         self.config = config or get_config()
         
-        # Initialize repositories and services
-        self.doc_repository = DocumentMetadataRepository()
-        self.vector_store = VectorStoreAdapter()
-        self.embedding_service = EmbeddingService(
-            model_name=self.config.ollama.embed_model,
+        # Initialize vector store
+        self.vector_store = vector_store or VectorStoreAdapter(config=self.config)
+        
+        # Initialize embeddings model
+        self.embeddings = embeddings or OllamaEmbeddings(
+            model=self.config.ollama.embed_model,
             base_url=self.config.ollama.base_url
         )
         
-        # Initialize default LLM
-        self.llm = OllamaLLM(
+        # Initialize LLM
+        self.llm = llm or OllamaLLM(
             model=self.config.ollama.model,
             base_url=self.config.ollama.base_url,
-            temperature=0.1
+            temperature=self.config.ollama.temperature
         )
         
         # Create RAG prompt template
-        self.prompt_template = PromptTemplate(
+        self.query_prompt = PromptTemplate(
             template="""
                 <system>
-                You are a document analysis assistant. Answer the user's question based on the information from the documents provided and the previous conversation.
+                You are a document analysis assistant. Answer the user's question based on the information from the documents I've indexed for you and the previous conversation.
                 Only use information from the documents shown below and refer to previous conversations if needed. If the answer cannot be formed satisfactorily, acknowledge that you don't have enough information.
                 Never claim the user wrote or said anything that appears in the documents.
                 </system>
@@ -75,104 +85,203 @@ class QueryEngine:
     def query(
         self,
         question: str,
-        case_id: str,
         document_ids: List[str],
-        chat_id: Optional[str] = None,
-        user_id: Optional[str] = None,
+        case_id: str,
         use_tree: bool = False,
         top_k: int = 5,
-        chat_history: Optional[str] = None,
-        model_preference: Optional[str] = None
+        tree_level_filter: Optional[List[int]] = None,  # None = all levels, [0] = original chunks, [1,2,3] = specific summary levels
+        chat_history: str = "",
+        model_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Process a query and generate an answer based on relevant documents.
+        Process a query against the document collection.
         
         Args:
             question: User question
-            case_id: Case ID for the query
             document_ids: List of document IDs to search
-            chat_id: Optional chat ID for tracking
-            user_id: Optional user ID for tracking
+            case_id: Case ID for filtering
             use_tree: Whether to use tree-based retrieval
             top_k: Number of chunks to retrieve
-            chat_history: Optional chat history formatted as text
-            model_preference: Optional model to use
+            tree_level_filter: Filter by tree level (None=all, [0]=original chunks only, [1,2,3]=summaries)
+            chat_history: Previous conversation history
+            model_override: Optional model to use instead of default
             
         Returns:
-            Query result with answer, sources, and stats
+            Query result with answer and sources
         """
-        start_time = time.time()
-        
-        try:
-            # 1. Generate query embedding
-            query_embedding = self.embedding_service.generate_embedding(question)
-            
-            # 2. Retrieve relevant chunks
-            retrieval_start = time.time()
-            chunks = self.retrieve_relevant_chunks(
-                query_embedding=query_embedding,
-                case_id=case_id,
-                document_ids=document_ids,
-                use_tree=use_tree,
-                top_k=top_k
-            )
-            retrieval_time = time.time() - retrieval_start
-            
-            if not chunks:
-                return {
-                    "status": "warning",
-                    "message": "No relevant chunks found",
-                    "answer": "I couldn't find any relevant information in the documents to answer your question.",
-                    "sources": [],
-                    "time_taken": time.time() - start_time,
-                    "retrieval_time": retrieval_time,
-                    "llm_time": 0,
-                    "token_count": 0,
-                    "model_used": None
-                }
-            
-            # 3. Create context from chunks
-            context = self._format_context(chunks)
-            
-            # 4. Process with LLM
-            llm_start = time.time()
-            answer, token_count, model_used = self.process_with_llm(
-                question=question,
-                context=context,
-                chat_history=chat_history or "",
-                model=model_preference
-            )
-            llm_time = time.time() - llm_start
-            
-            # 5. Format source information
-            sources = self._format_sources(chunks)
-            
-            # 6. Calculate total time
-            time_taken = time.time() - start_time
-            
-            # 7. Return result with tracking information
-            return {
-                "status": "success",
-                "message": f"Query processed in {time_taken:.2f} seconds",
-                "answer": answer,
-                "sources": sources,
-                "time_taken": time_taken,
-                "retrieval_time": retrieval_time,
-                "llm_time": llm_time,
-                "token_count": token_count,
-                "model_used": model_used,
-                "method": "tree" if use_tree else "flat"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing query: {str(e)}")
+        if not document_ids:
             return {
                 "status": "error",
-                "message": f"Error processing query: {str(e)}",
-                "answer": f"I encountered an error while processing your question: {str(e)}",
-                "sources": [],
-                "time_taken": time.time() - start_time
+                "message": "No documents specified",
+                "answer": "I don't have any documents to answer your question.",
+                "sources": []
             }
+        
+        start_time = time.time()
+        
+        # Generate query embedding
+        query_embedding = self.embeddings.embed_query(question)
+        
+        # Retrieve relevant chunks
+        retrieval_start = time.time()
+        
+        # Convert case_id to list format required by vector_store.search
+        case_ids = [case_id]
+        
+        # Set up chunk_types filter if tree_level_filter is specified
+        chunk_types = None
+        if tree_level_filter is not None:
+            if 0 in tree_level_filter and len(tree_level_filter) == 1:
+                # Filter for original chunks only
+                chunk_types = ["original"]
+            elif 0 not in tree_level_filter and tree_level_filter:
+                # Filter for summary chunks only
+                chunk_types = ["summary"]
+        
+        # Perform search directly with all filters
+        chunks = self.vector_store.search(
+            query_embedding=query_embedding,
+            case_ids=case_ids,
+            document_ids=document_ids,
+            tree_levels=tree_level_filter,
+            chunk_types=chunk_types,
+            top_k=top_k
+        )
+        
+        retrieval_time = time.time() - retrieval_start
+        
+        if not chunks:
+            return {
+                "status": "warning",
+                "message": "No relevant chunks found",
+                "answer": "I couldn't find any relevant information in the documents to answer your question.",
+                "sources": [],
+                "time_taken": time.time() - start_time,
+                "retrieval_time": retrieval_time,
+                "llm_time": 0
+            }
+        
+        # Create context from chunks
+        context = self._build_context_from_chunks(chunks)
+        
+        # Generate answer
+        llm_start = time.time()
+        try:
+            # Estimate token counts
+            input_token_count = self.estimate_token_count(context + question + chat_history)
+            
+            # Customize model based on override if provided
+            current_llm = self.llm
+            if model_override:
+                current_llm = OllamaLLM(
+                    model=model_override,
+                    base_url=self.config.ollama.base_url,
+                    temperature=self.config.ollama.temperature
+                )
+            
+            # Generate answer
+            chain = self.query_prompt | current_llm | StrOutputParser()
+            answer = chain.invoke({
+                "context": context,
+                "question": question,
+                "chat_history": chat_history
+            })
+            
+            # Roughly estimate output tokens
+            output_token_count = len(answer.split()) * 1.35  # Very rough approximation
+        except Exception as e:
+            logger.error(f"Error generating answer: {str(e)}")
+            return {
+                "status": "error",
+                "message": f"Error generating answer: {str(e)}",
+                "answer": "I encountered an error while trying to answer your question.",
+                "sources": [],
+                "time_taken": time.time() - start_time,
+                "retrieval_time": retrieval_time,
+                "llm_time": time.time() - llm_start
+            }
+        
+        llm_time = time.time() - llm_start
+        
+        # Format source information
+        sources = []
+        for chunk in chunks:
+            source = {
+                "document_id": chunk["document_id"],
+                "content": chunk["content"],
+                "score": chunk["score"],
+                "metadata": chunk.get("metadata", {}),
+                "tree_level": chunk.get("tree_level", 0)
+            }
+            sources.append(source)
+
+        time_taken = time.time() - start_time
+
+        return {
+            "status": "success",
+            "message": f"Query processed in {time_taken:.2f} seconds",
+            "answer": answer,
+            "sources": sources,
+            "time_taken": time_taken,
+            "retrieval_time": retrieval_time,
+            "llm_time": llm_time,
+            "input_tokens": input_token_count,
+            "output_tokens": output_token_count,
+            "model_used": model_override or self.config.ollama.model
+        }
+        
+    def estimate_token_count(self, text: str) -> int:
+        """
+        Estimate the number of tokens in a text.
+        This is a very rough approximation based on whitespace tokenization.
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Estimated token count
+        """
+        # This is a very rough approximation
+        # For more accurate counts, consider using tiktoken or similar
+        words = text.split()
+        
+        # Roughly 100 words = 75 tokens for typical English text
+        return int(len(words) * 0.75)
+    
+    def _build_context_from_chunks(self, chunks: List[Dict[str, Any]]) -> str:
+        """
+        Build context string from retrieved chunks.
+        
+        Args:
+            chunks: List of chunk objects with content and metadata
+            
+        Returns:
+            Formatted context string
+        """
+        context_parts = []
+        
+        for i, chunk in enumerate(chunks):
+            # Get content and metadata
+            content = chunk["content"]
+            metadata = chunk.get("metadata", {})
+            document_id = chunk["document_id"]
+            tree_level = chunk.get("tree_level", 0)
+            
+            # Format based on tree level
+            if tree_level > 0:
+                # Add summary marker
+                header = f"[SUMMARY LEVEL {tree_level} | DOC: {document_id}]"
+            else:
+                # Add document and page marker if available
+                page_num = metadata.get("page_idx", "unknown")
+                if isinstance(page_num, int):
+                    page_num += 1  # Convert from 0-indexed to 1-indexed for display
+                header = f"[DOCUMENT: {document_id} | PAGE: {page_num}]"
+            
+            # Add chunk to context
+            context_parts.append(f"{header}\n{content}\n")
+        
+        return "\n\n".join(context_parts)
     
     def retrieve_relevant_chunks(
         self,
@@ -325,7 +434,7 @@ class QueryEngine:
         # Generate answer
         try:
             # First, get the full prompt without executing it
-            full_prompt = self.prompt_template.format(
+            full_prompt = self.query_prompt.format(
                 context=context,
                 question=question,
                 chat_history=chat_history
@@ -388,7 +497,7 @@ class QueryEngine:
             Estimated token count
         """
         # Very rough estimation - 1 token ≈ 4 characters for English text
-        prompt_len = len(self.prompt_template.template)
+        prompt_len = len(self.query_prompt.template)
         context_len = len(context)
         question_len = len(question)
         history_len = len(history)

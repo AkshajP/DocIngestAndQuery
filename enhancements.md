@@ -55,12 +55,15 @@ Please continue the implementation by:
 
 Let me know if any specific component should be prioritized or if you'd like to see additional details about any part of the existing code.
 
-
-
- - Input and output tokens count differently in `query_engine.py`
- - parametrise flat, tree searches and summary and original chunk filters
- - handling of clear history 
+- Input and output tokens count differently in `query_engine.py`
+- parametrise flat, tree searches, summary and original chunk filters (tree= [1,2] / [0])
+- handling of clear history
+- Connect title generation to llm
 - _is_relevant_to_query method using embedding
+- upload job manager and real time stats
+- connect case_user_access table
 
+## Advanced
+
+- Retry mechanism and mid-process persistence
 case user role documents
-
