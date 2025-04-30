@@ -6,7 +6,7 @@ from api.models.chat_models import (
     ChatListResponse, ChatHistoryResponse, ChatDocumentsUpdateRequest
 )
 from api.models.query_models import QueryRequest, QueryResponse, RegenerateResponseRequest
-
+import time 
 from services.chat.manager import ChatManager
 from services.chat.history import ChatHistoryService
 from services.retrieval.query_engine import QueryEngine

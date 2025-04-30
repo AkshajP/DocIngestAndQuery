@@ -216,7 +216,18 @@ class ChatHistoryService:
         history_text = ""
         for message in messages:
             role_name = "USER" if message.role == MessageRole.USER else "ASSISTANT"
-            importance = "high" if query and self._is_relevant_to_query(message.content, query) else "normal"
+            
+            # Create a simplified interaction dict based on message role
+            if message.role == MessageRole.USER:
+                interaction = {"question": message.content, "answer": ""}
+            else:
+                interaction = {"question": "", "answer": message.content}
+                
+            # Determine importance using updated function
+            importance = "high" if query and self.is_relevant_to_query(
+                interaction=interaction,
+                query=query
+            ) else "normal"
             
             history_text += f"{role_name}: {message.content}\n"
             history_text += f"IMPORTANCE: {importance}\n\n"
@@ -294,25 +305,55 @@ class ChatHistoryService:
             error_details=error_details
         )
     
-    def _is_relevant_to_query(self, text: str, query: str) -> bool:
+    def is_relevant_to_query(self, interaction: Dict[str, str], query: str, threshold: float = 0.3) -> bool:
         """
-        Check if text is relevant to the current query.
+        Determine if a past interaction is relevant to the current query using embedding similarity.
         
         Args:
-            text: Text to check
-            query: Current query
+            interaction: Dictionary containing "question" and "answer" keys
+            query: Current user query
+            threshold: Similarity threshold (0.0 to 1.0)
             
         Returns:
-            True if relevant
+            True if the interaction is relevant to the query, False otherwise
         """
-        # Simple keyword matching for now
-        # In a more sophisticated implementation, you'd use embeddings
-        query_words = set(query.lower().split())
-        text_words = set(text.lower().split())
+        if not self.embedding_service:
+            # Lazy-initialize embedding service if not already done
+            from services.ml.embeddings import EmbeddingService
+            self.embedding_service = EmbeddingService(
+                model_name=self.config.ollama.embed_model,
+                base_url=self.config.ollama.base_url
+            )
         
-        # Check overlap
-        overlap = query_words.intersection(text_words)
-        return len(overlap) >= 2  # At least 2 matching words
+        try:
+            # Create a combined representation of the past interaction
+            past_text = f"{interaction.get('question', '')} {interaction.get('answer', '')}"
+            
+            # Generate embeddings for past interaction and current query
+            past_embedding = self.embedding_service.generate_embedding(past_text)
+            query_embedding = self.embedding_service.generate_embedding(query)
+            
+            # Calculate cosine similarity
+            import numpy as np
+            dot_product = np.dot(past_embedding, query_embedding)
+            norm1 = np.linalg.norm(past_embedding)
+            norm2 = np.linalg.norm(query_embedding)
+            
+            if norm1 == 0 or norm2 == 0:
+                return False
+                
+            similarity = dot_product / (norm1 * norm2)
+            
+            # Log similarity for debugging if needed
+            logger.debug(f"Similarity between query and past interaction: {similarity:.4f}")
+            
+            # Return True if similarity is above threshold
+            return similarity > threshold
+            
+        except Exception as e:
+            logger.error(f"Error calculating relevance: {str(e)}")
+            # Default to including the interaction if there's an error
+            return True
     
     def _extract_topics(self, text: str) -> str:
         """

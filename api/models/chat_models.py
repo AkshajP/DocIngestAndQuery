@@ -21,6 +21,11 @@ class Message(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     sources: Optional[List[Dict[str, Any]]] = None
     processing_stats: Optional[Dict[str, Any]] = None
+    token_count: Optional[int] = None  # Total tokens used
+    input_tokens: Optional[int] = None  # Input tokens
+    output_tokens: Optional[int] = None  # Output tokens
+    model_used: Optional[str] = None  # Model used for this message
+    response_time: Optional[int] = None  # Response time in ms
 
 
 class ChatDocument(BaseModel):
@@ -51,7 +56,7 @@ class ChatCreateRequest(BaseModel):
     """Request to create a new chat"""
     loaded_documents: Optional[List[ChatDocument]] = []
     title: Optional[str] = "Untitled Chat"
-
+    settings: Optional[Dict[str, Any]] = Field(default_factory=dict)  # Chat settings including model preferences
 
 class ChatListResponse(BaseModel):
     """Response for listing chats"""
