@@ -103,3 +103,61 @@ User role
 ```
 
 case title- Claimant vs Respondent || will get this info soon
+
+% TEMP
+
+Priority 1: Parametrize Search Options in Query Interface
+This is a high-impact, medium-complexity task that will significantly improve the user experience by allowing UI toggles for search preferences.
+
+Add parameters to control flat vs. tree traversal in query_engine.py
+Implement filters for tree_level (0 for original chunks, >0 for summaries)
+Update API endpoints to accept these parameters
+Connect to UI toggles
+
+Priority 2: Implement Token Counting
+Critical for monitoring and potentially billing, with relatively low implementation complexity:
+
+Track both input tokens (prompt) and output tokens (response)
+Add tokenizers appropriate for the models being used
+Include token counts in response metadata
+
+Priority 3: Implement Relevance Method
+This will improve retrieval quality by ensuring returned chunks are relevant:
+
+Add _is_relevant_to_query using embedding similarity
+Implement proper threshold for relevance determination
+Apply this filter during retrieval to improve results
+
+Priority 4: Stream LLM Responses
+Enhances user experience by showing responses as they're generated:
+
+Modify LLM wrappers to support streaming
+Update API endpoints to handle streaming responses
+Implement client-side handling of chunked data
+
+Priority 5: Connect Title Generation
+Good user experience enhancement:
+
+Create prompt for generating chat titles based on initial messages
+Connect to chat history and LLM
+Add API endpoint for title generation
+
+Priority 6: Upload Job Manager and Real-time Stats
+Important for monitoring document processing:
+
+Implement job tracking endpoints
+Create real-time statistics reporting
+Develop progress tracking and status updates
+
+Priority 7: Case-User Access Implementation
+Security feature that can be implemented after core functionality:
+
+Connect case_user_access table to authorization system
+Implement permission checks in API endpoints
+Create middleware for access control
+
+
+the actual API
+streaming response
+Job manager
+case user
