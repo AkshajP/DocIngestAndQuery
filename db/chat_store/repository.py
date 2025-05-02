@@ -771,3 +771,55 @@ class ChatRepository:
             self.conn.commit()
             
             return True
+        
+    def update_message_content(
+        self, 
+        message_id: str, 
+        content: str
+    ) -> Optional[Message]:
+        """
+        Update just the content of a message, useful for streaming updates.
+        
+        Args:
+            message_id: Message ID
+            content: New message content
+            
+        Returns:
+            Updated Message object or None if not found
+        """
+        self._ensure_connection()
+        
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE messages
+                SET content = %s
+                WHERE message_id = %s
+                RETURNING *
+                """,
+                (content, message_id)
+            )
+            
+            row = cursor.fetchone()
+            self.conn.commit()
+            
+            if not row:
+                return None
+            
+            # Convert to Message object
+            return Message(
+                message_id=row["message_id"],
+                chat_id=row["chat_id"],
+                user_id=row["user_id"],
+                case_id=row["case_id"],
+                role=row["role"],
+                content=row["content"],
+                created_at=row["created_at"],
+                sources=row["sources"],
+                metadata=row["metadata"],
+                status=row["status"],
+                token_count=row["token_count"],
+                model_used=row["model_used"],
+                error_details=row["error_details"],
+                response_time=row["response_time"]
+            )

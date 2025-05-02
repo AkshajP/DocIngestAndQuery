@@ -442,3 +442,53 @@ class ChatManager:
                 logger.warning(f"Document {doc_id} not found or not in case {case_id}")
         
         return valid_ids
+    def get_chat_documents(
+        self,
+        chat_id: str,
+        user_id: Optional[str] = None,
+        case_id: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get document IDs associated with a chat.
+        
+        Args:
+            chat_id: Chat ID
+            user_id: Optional user ID for access control
+            case_id: Optional case ID for access control
+            
+        Returns:
+            List of document IDs
+        """
+        # Check if chat exists with access control
+        chat = self.get_chat(
+            chat_id=chat_id,
+            user_id=user_id,
+            case_id=case_id
+        )
+        
+        if not chat:
+            logger.warning(f"Attempted to get documents for nonexistent chat: {chat_id}")
+            return []
+        
+        # Query the chat_documents table
+        documents = []
+        
+        try:
+            with self.chat_repo.conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT document_id FROM chat_documents
+                    WHERE chat_id = %s
+                    ORDER BY added_at DESC
+                    """,
+                    (chat_id,)
+                )
+                rows = cursor.fetchall()
+                documents = [row[0] for row in rows]
+                
+            logger.debug(f"Retrieved {len(documents)} documents for chat {chat_id}")
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error fetching documents for chat {chat_id}: {str(e)}")
+            return []

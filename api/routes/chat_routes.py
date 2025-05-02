@@ -10,6 +10,7 @@ from api.models.chat_models import (
     ChatCreateRequest, ChatDetailResponse, ChatUpdateRequest, 
     ChatListResponse, ChatHistoryResponse, ChatDocumentsUpdateRequest
 )
+from db.document_store.repository import DocumentMetadataRepository
 from api.models.query_models import QueryRequest, QueryResponse, RegenerateResponseRequest
 from services.chat.manager import ChatManager
 from services.chat.history import ChatHistoryService
@@ -25,7 +26,7 @@ async def get_current_case():
     # This would normally get the current case from the request
     return "default"
 
-router = APIRouter(prefix="/api/chats", tags=["chats"])
+router = APIRouter(prefix="/ai/chats", tags=["chats"])
 
 @router.post("", response_model=ChatDetailResponse)
 async def create_chat(
@@ -33,7 +34,12 @@ async def create_chat(
     user_id: str = Depends(get_current_user), 
     case_id: str = Depends(get_current_case)
 ):
-    """Create a new chat with welcome message"""
+    """
+    Create a new chat with welcome message.
+    
+    If the title is not provided or is set to "New Chat" or "Untitled Chat",
+    the system will automatically generate a title based on the first user message.
+    """
     chat_service = ChatManager()
     history_service = ChatHistoryService()
     
@@ -131,7 +137,7 @@ async def get_chat(
 ):
     """Get chat details including recent messages"""
     chat_service = ChatManager()
-    history_service = ChatHistoryService()
+    doc_repository = DocumentMetadataRepository()  # Add this import at the top
     
     # Get chat details
     chat = chat_service.get_chat(
@@ -151,10 +157,22 @@ async def get_chat(
         limit=10  # Get recent messages
     )
     
-    # Get document list
-    # In a real implementation, we'd query for the loaded documents
-    # For now, let's just use mock data
+    # Get document IDs for this chat
+    document_ids = chat_service.get_chat_documents(
+        chat_id=chat_id,
+        user_id=user_id,
+        case_id=case_id
+    )
+    
+    # Get document details from repository
     loaded_documents = []
+    for doc_id in document_ids:
+        doc_metadata = doc_repository.get_document(doc_id)
+        if doc_metadata:
+            loaded_documents.append({
+                "document_id": doc_id,
+                "title": doc_metadata.get("original_filename", "Unnamed Document")
+            })
     
     # Format response
     return ChatDetailResponse(
@@ -254,6 +272,7 @@ async def update_chat_documents(
 ):
     """Update documents loaded in a chat"""
     chat_service = ChatManager()
+    doc_repository = DocumentMetadataRepository()  # Make sure this is imported at the top
     
     success = chat_service.update_chat_documents(
         chat_id=chat_id,
@@ -267,9 +286,21 @@ async def update_chat_documents(
         raise HTTPException(status_code=404, detail="Chat not found")
     
     # Get updated document list
-    # In a real implementation, we'd query for the loaded documents
-    # For now, let's just use mock data
+    document_ids = chat_service.get_chat_documents(
+        chat_id=chat_id,
+        user_id=user_id,
+        case_id=case_id
+    )
+    
+    # Get document details from repository
     loaded_documents = []
+    for doc_id in document_ids:
+        doc_metadata = doc_repository.get_document(doc_id)
+        if doc_metadata:
+            loaded_documents.append({
+                "document_id": doc_id,
+                "title": doc_metadata.get("original_filename", "Unnamed Document")
+            })
     
     return {"status": "success", "loaded_documents": loaded_documents}
 
@@ -278,11 +309,23 @@ async def submit_query(
     request: QueryRequest,
     background_tasks: BackgroundTasks,
     chat_id: str = Path(..., description="Chat ID"),
-    stream: bool = Query(False, description="Stream the response"),
+    stream: bool = Query(False, description="Stream the response as Server-Sent Events"),
     user_id: str = Depends(get_current_user),
     case_id: str = Depends(get_current_case)
 ):
-    """Submit a query in a chat with optional streaming"""
+    """
+    Submit a query in a chat with optional streaming.
+    
+    When stream=True, the response is streamed as Server-Sent Events with the following event types:
+    - start: Initial event with message_id
+    - retrieval_complete: Sent when relevant chunks are retrieved
+    - sources: Provides information about the source documents used
+    - token: Each token of the generated response
+    - complete: Final event with timing statistics
+    - error: Sent if an error occurs during processing
+    
+    When stream=False, a complete QueryResponse is returned with the full answer and sources.
+    """
     chat_service = ChatManager()
     query_service = QueryEngine()
     history_service = ChatHistoryService()
