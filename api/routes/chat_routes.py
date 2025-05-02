@@ -11,11 +11,13 @@ from api.models.chat_models import (
     ChatListResponse, ChatHistoryResponse, ChatDocumentsUpdateRequest
 )
 from db.document_store.repository import DocumentMetadataRepository
+from services.pdf.highlighter import PDFHighlighter
 from api.models.query_models import QueryRequest, QueryResponse, RegenerateResponseRequest
 from services.chat.manager import ChatManager
 from services.chat.history import ChatHistoryService
 from services.retrieval.query_engine import QueryEngine
 from services.feedback.manager import FeedbackManager
+from core.config import get_config
 
 # Dependency functions (to be replaced with actual auth middleware)
 async def get_current_user():
@@ -719,3 +721,59 @@ async def _auto_generate_title(
     except Exception as e:
         # Log error but don't fail the request
         print(f"Error auto-generating title: {str(e)}")
+        
+        
+@router.get("/{chat_id}/messages/{message_id}/highlights/{document_id}")
+async def get_message_highlights(
+    chat_id: str = Path(..., description="Chat ID"),
+    message_id: str = Path(..., description="Message ID"),
+    document_id: str = Path(..., description="Document ID"),
+    highlight_data: Optional[str] = Query(None, description="JSON string of highlights data"),
+    zoom: float = Query(1.5, description="Zoom level for highlighting"),
+    user_id: str = Depends(get_current_user),
+    case_id: str = Depends(get_current_case)
+):
+    """Get highlighted PDF regions for message citations"""
+    # Initialize the PDF highlighter
+    from services.pdf.highlighter import PDFHighlighter
+    from core.config import get_config
+    
+    highlighter = PDFHighlighter(storage_dir=get_config().storage.storage_dir)
+    
+    # Parse the highlight data if provided
+    highlights = []
+    if highlight_data:
+        try:
+            highlights = json.loads(highlight_data)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid highlight data format")
+    else:
+        # If no highlight data provided, try to get from message sources
+        history_service = ChatHistoryService()
+        message = history_service.chat_repo.get_message(message_id)
+        
+        if not message or message.chat_id != chat_id:
+            raise HTTPException(status_code=404, detail="Message not found")
+            
+        # Extract highlights from message sources
+        sources = message.sources or []
+        for source in sources:
+            if source.get("document_id") == document_id:
+                original_boxes = source.get("original_boxes", [])
+                if original_boxes:
+                    highlights.extend(original_boxes)
+    
+    # Generate the highlighted thumbnail
+    if not highlights:
+        raise HTTPException(status_code=400, detail="No highlight data found")
+        
+    img_str = highlighter.get_multi_highlight_thumbnail(
+        document_id=document_id,
+        highlights=highlights,
+        zoom=zoom
+    )
+    
+    if not img_str:
+        raise HTTPException(status_code=404, detail="Could not generate highlights for this document")
+    
+    return {"image_data": img_str}

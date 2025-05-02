@@ -6,6 +6,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
+import base64
+from io import BytesIO
+from PIL import Image
 
 # Add parent directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -126,6 +129,30 @@ def mock_query_engine():
         yield mock
 
 @pytest.fixture
+def mock_pdf_highlighter():
+    """Mock the PDFHighlighter class"""
+    with patch("api.routes.chat_routes.PDFHighlighter") as mock:
+        highlighter_instance = mock.return_value
+        
+        # Create a small test image and convert to base64 for mock return
+        img = Image.new('RGB', (100, 100), color='red')
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        mock_img_str = base64.b64encode(buffered.getvalue()).decode()
+        
+        # Set up return values
+        highlighter_instance.get_multi_highlight_thumbnail.return_value = mock_img_str
+        highlighter_instance._find_pdf_path.return_value = "/path/to/test.pdf"
+        highlighter_instance.debug_pdf_info.return_value = {
+            "document_id": "doc_12345",
+            "pdf_exists": True,
+            "page_count": 5
+        }
+        
+        yield mock
+
+
+@pytest.fixture
 def mock_history_service():
     """Mock the ChatHistoryService class"""
     with patch("api.routes.chat_routes.ChatHistoryService") as mock:
@@ -147,6 +174,17 @@ def mock_history_service():
             case_id="test_case",
             role=MessageRole.ASSISTANT,
             content="Test answer",
+            sources=[{
+                "document_id": "doc_12345",
+                "content": "Source content",
+                "score": 0.9,
+                "original_boxes": [
+                    {
+                        "original_page_index": 0,
+                        "bbox": [100, 100, 200, 200]
+                    }
+                ]
+            }],
             status="completed"
         )
         
@@ -381,6 +419,41 @@ def test_regenerate_response():
         assert "answer" in data
         assert "sources" in data
         assert "processing_stats" in data
+        
+@pytest.mark.usefixtures("mock_pdf_highlighter", "mock_history_service")
+def test_get_message_highlights():
+    """Test the highlight endpoint using message sources"""
+    # Setup test highlight data
+    test_highlights = [
+        {
+            "original_page_index": 0,
+            "bbox": [100, 100, 200, 200]
+        },
+        {
+            "original_page_index": 0,
+            "bbox": [300, 300, 400, 400]
+        }
+    ]
+    
+    # The endpoint path with required parameters
+    endpoint = "/api/chats/chat_12345/messages/msg_12345/highlights/doc_12345"
+    
+    # Call the endpoint - using the highlight data extracted from message
+    response = client.get(endpoint)
+    
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "image_data" in data
+    assert len(data["image_data"]) > 0  # Base64 image data should be present
+    
+    # Test with explicit highlight data
+    highlight_json = json.dumps(test_highlights)
+    response = client.get(endpoint, params={"highlight_data": highlight_json, "zoom": 2.0})
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "image_data" in data
 
 if __name__ == "__main__":
     pytest.main(["-v"])
