@@ -15,6 +15,12 @@ interface ChatContextType {
   createChat: (documentIds: string[], title?: string) => Promise<string>;
   updateChatDocuments: (chatId: string, add: string[], remove: string[]) => Promise<void>;
   sendMessage: (chatId: string, question: string) => Promise<void>;
+  updateChatTitle: (chatId: string, title: string) => Promise<void>;
+  deleteChat: (chatId: string) => Promise<void>;
+  regenerateResponse: (chatId: string, messageId: string) => Promise<void>;
+  getChatTitle: (chatId: string) => Promise<string>;
+  highlightDocumentSource: (chatId: string, messageId: string, documentId: string) => Promise<string>;
+
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -38,12 +44,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const fetchChatMessages = useCallback(async (chatId: string) => {
+    if (!chatId) {
+      console.warn('Cannot fetch messages: No chat ID provided');
+      return;
+    }
+  
     try {
       setLoadingMessages(true);
+      
+      // Try to get the chat details first to verify it exists
+      try {
+        const chatDetails = await chatApi.getChat(chatId);
+        // If we get here, the chat exists and we can proceed
+      } catch (chatError) {
+        console.warn(`Chat ${chatId} not found or not accessible, skipping message fetch`);
+        setLoadingMessages(false);
+        return; // Exit early if chat doesn't exist
+      }
+      
+      // Now fetch the messages
       const response = await chatApi.getChatHistory(chatId);
-      setMessages(response.messages);
+      setMessages(response.messages || []);
     } catch (error) {
       console.error('Failed to fetch chat messages:', error);
+      setMessages([]); // Set empty messages on error
     } finally {
       setLoadingMessages(false);
     }
@@ -51,17 +75,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const createChat = useCallback(async (documentIds: string[], title?: string): Promise<string> => {
     try {
+      // First create the chat
       const response = await chatApi.createChat({
         loaded_documents: documentIds.map(id => ({ document_id: id, title: '' })),
         title: title || 'New Chat',
       });
-      await fetchChats();
+      
+      // Add to local chat list without immediately trying to fetch messages
+      setChats(prev => [
+        {
+          id: response.id,
+          title: response.title,
+          messages_count: 0,
+          last_active: new Date().toISOString()
+        },
+        ...prev
+      ]);
+      
+      // Return the chat ID so navigation can happen
       return response.id;
+      
+      // Don't call fetchChats() or fetchChatMessages() here
+      // Let the chat page handle loading messages when it mounts
     } catch (error) {
       console.error('Failed to create chat:', error);
       throw error;
     }
-  }, [fetchChats]);
+  }, []);
 
   const updateChatDocuments = useCallback(async (chatId: string, add: string[], remove: string[]) => {
     try {
@@ -103,6 +143,71 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchChatMessages]);
 
+  const updateChatTitle = useCallback(async (chatId: string, title: string) => {
+    try {
+      await chatApi.updateChat(chatId, { title });
+      // Update local state
+      setChats(prev => prev.map(chat => 
+        chat.id === chatId ? { ...chat, title } : chat
+      ));
+    } catch (error) {
+      console.error('Failed to update chat title:', error);
+      throw error;
+    }
+  }, []);
+  
+  const deleteChat = useCallback(async (chatId: string) => {
+    try {
+      await chatApi.deleteChat(chatId);
+      // Update local state
+      setChats(prev => prev.filter(chat => chat.id !== chatId));
+    } catch (error) {
+      console.error('Failed to delete chat:', error);
+      throw error;
+    }
+  }, []);
+  
+  const regenerateResponse = useCallback(async (chatId: string, messageId: string) => {
+    try {
+      setLoadingMessages(true);
+      // Find the previous message to get the question
+      const questionIndex = messages.findIndex(m => m.id === messageId) - 1;
+      if (questionIndex >= 0) {
+        const question = messages[questionIndex].content;
+        const response = await chatApi.submitQuery(chatId, { question });
+        // Refresh messages
+        await fetchChatMessages(chatId);
+      }
+    } catch (error) {
+      console.error('Failed to regenerate response:', error);
+    } finally {
+      setLoadingMessages(false);
+    }
+  }, [messages, fetchChatMessages]);
+  
+  const getChatTitle = useCallback(async (chatId: string) => {
+    try {
+      const chat = await chatApi.getChat(chatId);
+      return chat.title;
+    } catch (error) {
+      console.error('Failed to get chat title:', error);
+      return "Untitled Chat";
+    }
+  }, []);
+  
+  const highlightDocumentSource = useCallback(async (chatId: string, messageId: string, documentId: string) => {
+    try {
+      // This would call the API endpoint for highlighting
+      // For now we'll return a placeholder since the API is not fully implemented in the frontend
+      return `/api/ai/chats/${chatId}/messages/${messageId}/highlights/${documentId}`;
+    } catch (error) {
+      console.error('Failed to get document highlights:', error);
+      throw error;
+    }
+  }, []);
+
+  
+
   return (
     <ChatContext.Provider value={{
       chats,
@@ -114,11 +219,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       createChat,
       updateChatDocuments,
       sendMessage,
+      updateChatTitle,
+      deleteChat,
+      regenerateResponse,
+      getChatTitle,
+      highlightDocumentSource
     }}>
       {children}
     </ChatContext.Provider>
   );
 }
+
 
 export function useChat() {
   const context = useContext(ChatContext);

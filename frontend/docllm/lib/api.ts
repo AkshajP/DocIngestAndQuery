@@ -61,7 +61,8 @@ import {
         method: "POST",
         body: JSON.stringify(data),
       });
-    },
+    }
+    ,
     
     listChats: async (params?: { limit?: number; offset?: number }): Promise<ChatListResponse> => {
       const queryParams = new URLSearchParams();
@@ -95,7 +96,7 @@ import {
       if (params?.offset) queryParams.append("offset", params.offset.toString());
       
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
-      return fetchWithErrorHandling<ChatHistoryResponse>(`/ai/chats/${chatId}/history${queryString}`);
+      return fetchWithErrorHandling<ChatHistoryResponse>(`/chats/${chatId}/history${queryString}`);
     },
     
     updateChatDocuments: async (chatId: string, data: ChatDocumentsUpdateRequest): Promise<{ status: string; loaded_documents: any[] }> => {
@@ -106,7 +107,7 @@ import {
     },
     
     submitQuery: async (chatId: string, data: QueryRequest): Promise<QueryResponse> => {
-      return fetchWithErrorHandling<QueryResponse>(`/ai/chats/${chatId}/query`, {
+      return fetchWithErrorHandling<QueryResponse>(`/chats/${chatId}/query`, {
         method: "POST",
         body: JSON.stringify(data),
       });
@@ -114,7 +115,7 @@ import {
     
     streamQuery: async (chatId: string, data: QueryRequest): Promise<Response> => {
       // This function returns the raw Response object for streaming
-      const response = await fetch(`${API_BASE_URL}/ai/chats/${chatId}/query?stream=true`, {
+      const response = await fetch(`${API_BASE_URL}/chats/${chatId}/query?stream=true`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
