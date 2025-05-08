@@ -106,6 +106,7 @@ async def list_chats(
 ):
     """List all chats for the current user and case"""
     chat_service = ChatManager()
+    history_service = ChatHistoryService()
     
     chats, total = chat_service.list_chats(
         user_id=user_id,
@@ -113,17 +114,26 @@ async def list_chats(
         include_archived=include_archived
     )
     
-    # Format response
+    # Format response with actual message counts
+    chat_list = []
+    for chat in chats:
+        # Get message count for this chat
+        _, count = history_service.get_history(
+            chat_id=chat.chat_id,
+            user_id=user_id,
+            case_id=case_id,
+            limit=0  # Only need the count, not the messages
+        )
+        
+        chat_list.append({
+            "id": chat.chat_id,
+            "title": chat.title,
+            "messages_count": count,
+            "last_active": chat.updated_at
+        })
+    
     return ChatListResponse(
-        chats=[
-            {
-                "id": chat.chat_id,
-                "title": chat.title,
-                "messages_count": 0,  # We'd need to count messages in a real implementation
-                "last_active": chat.updated_at
-            }
-            for chat in chats
-        ],
+        chats=chat_list,
         pagination={
             "total": total,
             "limit": limit,
@@ -426,8 +436,14 @@ async def submit_query(
             use_tree=request.use_tree if request.use_tree is not None else False,
             top_k=request.top_k if request.top_k is not None else 5,
             chat_history=chat_history,
-            model_preference=request.model_override,
+            model_override=request.model_override,
             tree_level_filter=request.tree_level_filter
+        )
+        
+        background_tasks.add_task(
+            history_service.chat_repo.update_message_content,
+            message_id=message_id,
+            content=result["answer"]
         )
         
         # Update assistant message with the full response
@@ -777,3 +793,39 @@ async def get_message_highlights(
         raise HTTPException(status_code=404, detail="Could not generate highlights for this document")
     
     return {"image_data": img_str}
+
+@router.get("/all-documents")  # Changed from "/documents" to "/all-documents"
+async def list_processed_documents(
+    limit: int = Query(10, description="Number of documents per page"),
+    offset: int = Query(0, description="Pagination offset"),
+    user_id: str = Depends(get_current_user),
+    case_id: str = Depends(get_current_case)
+):
+    """List all processed documents accessible to the current user"""
+    doc_repository = DocumentMetadataRepository()
+    
+    # Get all documents
+    all_documents = doc_repository.list_documents()
+    
+    # Apply pagination
+    total = len(all_documents)
+    paginated_documents = all_documents[offset:offset+limit]
+    
+    # Format response
+    return {
+        "documents": [
+            {
+                "document_id": doc.get("document_id", ""),
+                "document_name": doc.get("original_filename", "Unnamed"),
+                "status": doc.get("status", "Unknown"),
+                "chunks_count": doc.get("chunks_count", 0),
+                "processing_date": doc.get("processing_date")
+            }
+            for doc in paginated_documents
+        ],
+        "pagination": {
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    }

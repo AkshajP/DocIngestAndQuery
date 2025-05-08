@@ -80,6 +80,7 @@ export default function Home() {
   };
 
   const processedDocuments = documents.filter(doc => doc.status === 'processed');
+  console.log(processedDocuments)
 
   return (
     <div className="container max-w-6xl mx-auto py-8 px-4 md:px-6">
@@ -114,7 +115,9 @@ export default function Home() {
                 <div className="space-y-4">
                   <p className="text-sm mb-2">Select documents to include in your chat:</p>
                   <div className="border rounded-md divide-y max-h-[300px] overflow-y-auto">
-                    {processedDocuments.map(doc => (
+                    {processedDocuments.map(doc => {
+                      
+                      return (
                       <div key={doc.document_id} className="p-3 flex items-center">
                         <Checkbox
                           id={doc.document_id}
@@ -127,8 +130,8 @@ export default function Home() {
                           className="flex items-center flex-1 cursor-pointer"
                         >
                           <FileIcon className="mr-2 h-4 w-4 text-blue-500" />
-                          <span className="truncate" title={doc.original_filename}>
-                            {doc.original_filename}
+                          <span className="truncate" title={doc.document_name}>
+                            {doc.document_name}
                           </span>
                         </label>
                         {doc.chunks_count && (
@@ -137,7 +140,7 @@ export default function Home() {
                           </span>
                         )}
                       </div>
-                    ))}
+                    )})}
                   </div>
                 </div>
               )}

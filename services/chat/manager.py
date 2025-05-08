@@ -298,7 +298,6 @@ class ChatManager:
         """
         messages, total = self.chat_repo.get_messages(
             chat_id=chat_id,
-            user_id=user_id,
             case_id=case_id,
             limit=limit,
             offset=0

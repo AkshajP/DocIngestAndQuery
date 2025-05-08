@@ -46,7 +46,7 @@ import {
       if (params?.offset) queryParams.append("offset", params.offset.toString());
       
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
-      return fetchWithErrorHandling<DocumentListResponse>(`/documents${queryString}`);
+      return fetchWithErrorHandling<DocumentListResponse>(`/documents/${queryString}`);
     },
     
     getDocument: async (documentId: string): Promise<DocumentDetailResponse> => {
@@ -100,7 +100,7 @@ import {
     },
     
     updateChatDocuments: async (chatId: string, data: ChatDocumentsUpdateRequest): Promise<{ status: string; loaded_documents: any[] }> => {
-      return fetchWithErrorHandling<{ status: string; loaded_documents: any[] }>(`/ai/chats/${chatId}/documents`, {
+      return fetchWithErrorHandling<{ status: string; loaded_documents: any[] }>(`/chats/${chatId}/documents`, {
         method: "PUT",
         body: JSON.stringify(data),
       });

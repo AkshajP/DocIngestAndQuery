@@ -87,6 +87,8 @@ class QueryEngine:
         question: str,
         document_ids: List[str],
         case_id: str,
+        chat_id: None,
+        user_id: None,
         use_tree: bool = False,
         top_k: int = 5,
         tree_level_filter: Optional[List[int]] = None,  # None = all levels, [0] = original chunks, [1,2,3] = specific summary levels
@@ -225,8 +227,8 @@ class QueryEngine:
             "time_taken": time_taken,
             "retrieval_time": retrieval_time,
             "llm_time": llm_time,
-            "input_tokens": input_token_count,
-            "output_tokens": output_token_count,
+            "input_tokens": int(input_token_count),
+            "output_tokens": int(output_token_count),
             "model_used": model_override or self.config.ollama.model
         }
         

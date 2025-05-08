@@ -146,15 +146,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const updateChatTitle = useCallback(async (chatId: string, title: string) => {
     try {
       await chatApi.updateChat(chatId, { title });
-      // Update local state
-      setChats(prev => prev.map(chat => 
+      
+      // Create a new array to ensure React detects the state change
+      const updatedChats = chats.map(chat => 
         chat.id === chatId ? { ...chat, title } : chat
-      ));
+      );
+      
+      // Set the entire chats array to trigger re-renders in all components using it
+      setChats(updatedChats);
+      
+      // Also fetch fresh data from the server to ensure everything is in sync
+      fetchChats();
     } catch (error) {
       console.error('Failed to update chat title:', error);
       throw error;
     }
-  }, []);
+  }, [chats, fetchChats]);
   
   const deleteChat = useCallback(async (chatId: string) => {
     try {

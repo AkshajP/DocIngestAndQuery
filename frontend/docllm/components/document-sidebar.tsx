@@ -153,8 +153,8 @@ export function DocumentSidebar({ chatId, onDocumentsSelected }: DocumentSidebar
                     }`}
                   >
                     <FileIcon className="mr-2 flex-shrink-0" />
-                    <span className="text-sm truncate" title={doc.original_filename}>
-                      {doc.original_filename}
+                    <span className="text-sm truncate" title={doc.document_name}>
+                      {doc.document_name}
                     </span>
                   </label>
                   <span className={`ml-2 text-xs px-2 py-1 rounded-full ${
