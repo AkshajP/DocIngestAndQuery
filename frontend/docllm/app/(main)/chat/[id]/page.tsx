@@ -9,6 +9,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/components/toast';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   LoaderIcon, 
   PencilIcon, 
@@ -36,8 +38,10 @@ function MessageItem({ message, onRegenerate, onViewSource }: MessageItemProps) 
             {message.role === 'user' ? 'U' : 'A'}
           </div>
           <div className="flex-1">
-            <div className="prose">
-              {message.content}
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.content}
+              </ReactMarkdown>
             </div>
             
             {message.sources && message.sources.length > 0 && (

@@ -85,7 +85,7 @@ import {
     },
     
     deleteChat: async (chatId: string): Promise<{ status: string; message: string }> => {
-      return fetchWithErrorHandling<{ status: string; message: string }>(`/ai/chats/${chatId}`, {
+      return fetchWithErrorHandling<{ status: string; message: string }>(`/chats/${chatId}`, {
         method: "DELETE",
       });
     },

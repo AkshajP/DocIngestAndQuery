@@ -17,6 +17,7 @@ import { DocumentSidebar } from '@/components/document-sidebar';
 import { useChat } from '@/contexts/ChatContext';
 import { ChatItem } from '@/components/sidebar-history-item';
 import { PlusIcon } from '@/components/icons';
+import { chatApi } from '@/lib/api';
 
 export default function MainLayout({
   children,

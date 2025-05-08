@@ -120,3 +120,44 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Add this to frontend/docllm/app/globals.css */
+
+/* Custom styles for markdown content */
+.prose code {
+  @apply bg-muted px-1 py-0.5 rounded text-sm font-mono;
+}
+
+.prose pre {
+  @apply bg-muted p-4 rounded-md overflow-x-auto;
+}
+
+.prose pre code {
+  @apply bg-transparent p-0 text-sm;
+}
+
+.prose blockquote {
+  @apply border-l-4 border-muted pl-4 italic;
+}
+
+.prose table {
+  @apply border-collapse w-full;
+}
+
+.prose th, .prose td {
+  @apply border p-2 text-sm;
+}
+
+.prose th {
+  @apply bg-muted font-semibold;
+}
+
+/* Adjust link colors to match your theme */
+.prose a {
+  @apply text-primary hover:underline;
+}
+
+/* Preserve whitespace in code blocks */
+.prose pre code {
+  white-space: pre;
+}
