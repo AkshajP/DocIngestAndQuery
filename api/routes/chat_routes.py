@@ -117,20 +117,34 @@ async def list_chats(
     # Format response with actual message counts
     chat_list = []
     for chat in chats:
-        # Get message count for this chat
-        _, count = history_service.get_history(
-            chat_id=chat.chat_id,
-            user_id=user_id,
-            case_id=case_id,
-            limit=0  # Only need the count, not the messages
-        )
-        
-        chat_list.append({
-            "id": chat.chat_id,
-            "title": chat.title,
-            "messages_count": count,
-            "last_active": chat.updated_at
-        })
+        try:
+            # Get message count for this chat - use get_chat_history instead of get_history
+            messages, count = chat_service.get_chat_history(
+                chat_id=chat.chat_id,
+                user_id=user_id,
+                case_id=case_id,
+                limit=0  # Only need the count, not the messages
+            )
+            
+            # Make sure count is an integer
+            if not isinstance(count, int):
+                # If count is not an integer, use length of messages or default to 0
+                count = len(messages) if messages else 0
+                
+            chat_list.append({
+                "id": chat.chat_id,
+                "title": chat.title,
+                "messages_count": count,
+                "last_active": chat.updated_at
+            })
+        except Exception as e:
+            # If anything goes wrong, use a default count of 0
+            chat_list.append({
+                "id": chat.chat_id,
+                "title": chat.title,
+                "messages_count": 0,
+                "last_active": chat.updated_at
+            })
     
     return ChatListResponse(
         chats=chat_list,
