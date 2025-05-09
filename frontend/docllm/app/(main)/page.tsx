@@ -12,6 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Separator } from '@/components/ui/separator';
 import { FileIcon, LoaderIcon, PlusIcon } from '@/components/icons';
 import { toast } from '@/components/toast';
+import DocumentSelector from '@/components/ag-grid-document-selector';
 
 export default function Home() {
   const router = useRouter();
@@ -55,18 +56,18 @@ export default function Home() {
     });
   };
 
-  const handleCreateChat = async () => {
-    if (selectedDocuments.length === 0) {
+  const handleCreateChat = async (documentIds: string[]) => {
+    if (documentIds.length === 0) {
       toast({
         type: 'error',
         description: 'Please select at least one document to start a chat.'
       });
       return;
     }
-
+  
     setCreatingChat(true);
     try {
-      const chatId = await createChat(selectedDocuments);
+      const chatId = await createChat(documentIds);
       router.push(`/chat/${chatId}`);
     } catch (error) {
       console.error('Failed to create chat:', error);
@@ -93,78 +94,20 @@ export default function Home() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Start a New Chat</CardTitle>
-              <CardDescription>
-                Select documents and create a new chat to ask questions
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {loadingDocuments ? (
-                <div className="flex justify-center items-center p-6">
-                  <LoaderIcon className="animate-spin mr-2" />
-                  <span>Loading documents...</span>
-                </div>
-              ) : processedDocuments.length === 0 ? (
-                <div className="p-6 text-center">
-                  <p className="text-muted-foreground mb-2">No processed documents available</p>
-                  <p className="text-sm">Contact your administrator to add documents to the system.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <p className="text-sm mb-2">Select documents to include in your chat:</p>
-                  <div className="border rounded-md divide-y max-h-[300px] overflow-y-auto">
-                    {processedDocuments.map(doc => {
-                      
-                      return (
-                      <div key={doc.document_id} className="p-3 flex items-center">
-                        <Checkbox
-                          id={doc.document_id}
-                          checked={selectedDocuments.includes(doc.document_id)}
-                          onCheckedChange={() => handleDocumentToggle(doc.document_id)}
-                          className="mr-3"
-                        />
-                        <label
-                          htmlFor={doc.document_id}
-                          className="flex items-center flex-1 cursor-pointer"
-                        >
-                          <FileIcon className="mr-2 h-4 w-4 text-blue-500" />
-                          <span className="truncate" title={doc.document_name}>
-                            {doc.document_name}
-                          </span>
-                        </label>
-                        {doc.chunks_count && (
-                          <span className="text-xs text-muted-foreground ml-2">
-                            {doc.chunks_count} chunks
-                          </span>
-                        )}
-                      </div>
-                    )})}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-            <CardFooter>
-              <Button
-                className="w-full"
-                onClick={handleCreateChat}
-                disabled={loadingDocuments || creatingChat || selectedDocuments.length === 0}
-              >
-                {creatingChat ? (
-                  <>
-                    <LoaderIcon className="mr-2 h-4 w-4 animate-spin" />
-                    Creating Chat...
-                  </>
-                ) : (
-                  <>
-                    <PlusIcon className="mr-2 h-4 w-4" />
-                    Start New Chat
-                  </>
-                )}
-              </Button>
-            </CardFooter>
-          </Card>
+        <Card>
+  <CardHeader>
+    <CardTitle>Start a New Chat</CardTitle>
+    <CardDescription>
+      Select documents from the tree view and create a new chat to ask questions
+    </CardDescription>
+  </CardHeader>
+  <CardContent>
+    <DocumentSelector 
+      onDocumentsSelected={handleCreateChat}
+      isLoading={creatingChat}
+    />
+  </CardContent>
+</Card>
 
           <Card>
             <CardHeader>
