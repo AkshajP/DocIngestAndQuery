@@ -131,3 +131,41 @@ import {
       return response;
     }
   };
+  
+  export const adminApi = {
+    getStats: async (): Promise<any> => {
+      return fetchWithErrorHandling<any>(`/admin/stats`);
+    },
+    
+    listDocuments: async (params?: { status?: string }): Promise<any> => {
+      const queryParams = new URLSearchParams();
+      if (params?.status) queryParams.append("status", params.status);
+      
+      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
+      return fetchWithErrorHandling<any>(`/admin/documents${queryString}`);
+    },
+    
+    uploadDocument: async (file: File, caseId?: string): Promise<any> => {
+      const formData = new FormData();
+      formData.append("file", file);
+      if (caseId) formData.append("case_id", caseId);
+      
+      const response = await fetch(`${API_BASE_URL}/admin/documents/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `API error: ${response.status}`);
+      }
+      
+      return await response.json();
+    },
+    
+    retryDocument: async (documentId: string): Promise<any> => {
+      return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/retry`, {
+        method: "POST",
+      });
+    }
+  };

@@ -9,6 +9,16 @@
     - [ ] Deciding migration of `registry.json`
 - [ ] Sidebar and DASH modal integration
 - [ ] Stream response
+- [ ] ability to interact with doc processings - what failed
+
+
+ag grid interact
+doc process tracking
+AI int for long context answer generation
+
+embeddings generatED folder structure
+
+# STUBBBB
 
 ## Advanced
 
