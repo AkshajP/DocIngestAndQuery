@@ -37,15 +37,16 @@ export interface DocumentProcessingStages {
 
 export interface DocumentMetadata {
   document_id: string;
-  document_name: string;
-  case_path: string;
+  document_name: string;  
   status: DocumentStatus;
   chunks_count?: number;
   processing_date?: string;
   file_type?: string;
   language?: string;
+  page_count?: number;
   content_types?: Record<string, number>;
   raptor_levels?: number[];
+  case_path?: string;
 }
 
 export interface DocumentProcessRequest {

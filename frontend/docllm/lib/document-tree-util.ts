@@ -1,140 +1,131 @@
-// lib/document-tree-util.js
+// frontend/docllm/lib/document-tree-util.ts
+// Enhanced version with more features
+
 /**
- * Transforms a flat list of documents into a hierarchical tree structure for AG Grid
- * using the case_path field when available.
- * 
- * @param {Array} documents - The list of documents from the API
- * @returns {Array} - Tree-structured data for AG Grid
+ * Transforms a flat list of documents into a hierarchical tree structure
+ * based solely on the case_path field, suitable for AG Grid's tree data feature.
  */
-export function transformDocumentsToTree(documents) {
-  console.log(documents)
-  const treeData = [];
+export function transformDocumentsToTree(documents: any[]): any[] {
+  const result: any[] = [];
+  const folderMap = new Map<string, any>();
+  let hasUncategorizedDocuments = false;
   
-  // Track folders to avoid duplication
-  const folderSet = new Set();
-  
-  // First, add all folders from case_paths
+  // Process each document
   documents.forEach(doc => {
-    if (doc.case_path) {
-      // Extract folder name from case_path
-      const pathParts = doc.case_path.split('/');
-      const folderName = pathParts[0];
-      
-      // Add folder node if it doesn't exist yet
-      if (!folderSet.has(folderName)) {
-        folderSet.add(folderName);
-        treeData.push({
+    if (!doc.case_path) {
+      // Document has no case_path, will be added to "Uncategorized" folder
+      // Create "Uncategorized" folder if it doesn't exist yet
+      if (!folderMap.has("Uncategorized")) {
+        const uncategorizedFolder = {
+          name: "Uncategorized",
+          path: "Uncategorized",
           isFolder: true,
-          name: folderName,
-          docId: `folder_${folderName}`, // Add ID for the folder for selection purposes
-          path: folderName, // Path for the folder is just its name
-        });
+          description: "Documents without a specified path",
+          status: null,
+          importance: null,
+          page_count: null,
+          size: null,
+          docId: "folder_Uncategorized"
+        };
+        
+        folderMap.set("Uncategorized", uncategorizedFolder);
+        result.push(uncategorizedFolder);
       }
-    }
-  });
-  
-  // Then add all documents
-  documents.forEach(doc => {
-    // Format file size (if available)
-    const size = formatFileSize(doc.file_size);
-    
-    // Basic document properties
-    const docData = {
-      docId: doc.document_id,
-      name: doc.original_filename || 'Unnamed Document',
-      status: doc.status || 'unknown',
-      page_count: doc.page_count || 0,
-      size: size,
-      importance: calculateImportance(doc), // Function to determine importance
-      description: generateDescription(doc), // Function to generate description
-    };
-    
-    // If document has case_path, use it for hierarchical display
-    if (doc.case_path) {
-      docData.path = doc.case_path;
-    } else {
-      // For documents without case_path, set a flag to show at root level
-      docData.path = 'Uncategorized/' + doc.original_filename;
-    }
-    
-    treeData.push(docData);
-  });
-  
-  // Add uncategorized folder if there are documents without case_path
-  if (documents.some(doc => !doc.case_path)) {
-    treeData.unshift({
-      isFolder: true,
-      name: 'Uncategorized',
-      docId: 'folder_uncategorized',
-      path: 'Uncategorized',
-    });
-  }
-  
-  return treeData;
-}
-
-/**
- * Formats file size in B, KB, or MB
- */
-function formatFileSize(bytes) {
-  if (!bytes) return 'Unknown';
-  
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-/**
- * Calculate importance rating (1-5) based on document properties
- */
-function calculateImportance(doc) {
-  // Sample logic to determine document importance
-  // Could be based on file size, page count, content types, etc.
-  if (!doc) return 1;
-  
-  let importance = 3; // Default
-  
-  // Factors that could increase importance
-  if (doc.page_count > 20) importance++;
-  if (doc.chunks_count > 50) importance++;
-  
-  // Factors that could decrease importance
-  if (doc.status !== 'processed') importance--;
-  
-  // Ensure importance is within range 1-5
-  return Math.max(1, Math.min(5, importance));
-}
-
-/**
- * Generate a meaningful description for the document
- */
-function generateDescription(doc) {
-  if (!doc) return '';
-  
-  let description = '';
-  
-  if (doc.status === 'processed') {
-    description += `${doc.chunks_count || 0} chunks`;
-    
-    if (doc.content_types) {
-      const contentTypes = [];
-      if (doc.content_types.text) contentTypes.push(`${doc.content_types.text} text sections`);
-      if (doc.content_types.table) contentTypes.push(`${doc.content_types.table} tables`);
-      if (doc.content_types.image) contentTypes.push(`${doc.content_types.image} images`);
       
-      if (contentTypes.length > 0) {
-        description += ` (${contentTypes.join(', ')})`;
+      // Add document to "Uncategorized" folder
+      result.push({
+        name: doc.document_name || doc.original_filename,
+        docId: doc.document_id,
+        path: `Uncategorized/${doc.document_name || doc.original_filename}`,
+        isFolder: false,
+        description: doc.original_filename || doc.document_name,
+        status: doc.status,
+        importance: doc.importance || determineImportance(doc),
+        page_count: doc.page_count || 0,
+        size: formatSize(doc.size) || 'Unknown',
+      });
+      
+      hasUncategorizedDocuments = true;
+      return;
+    }
+    
+    // Document has case_path, parse it
+    const pathParts = doc.case_path.split('/');
+    const fileName = pathParts.pop(); // Last part is the filename
+    
+    // Create folder hierarchy from case_path
+    let currentPath = '';
+    for (let i = 0; i < pathParts.length; i++) {
+      const folder = pathParts[i];
+      // Build path incrementally (e.g., "Bundle A" then "Bundle A/Subfolder")
+      currentPath = currentPath ? `${currentPath}/${folder}` : folder;
+      
+      // Create folder node if it doesn't exist
+      if (!folderMap.has(currentPath)) {
+        const folderNode = {
+          name: folder,
+          path: currentPath,
+          isFolder: true,
+          description: `${folder}`,
+          status: null,
+          importance: null,
+          page_count: null,
+          size: null,
+          docId: `folder_${currentPath.replace(/\//g, '_')}` // Generate a unique folder ID
+        };
+        
+        folderMap.set(currentPath, folderNode);
+        result.push(folderNode);
       }
     }
-  } else if (doc.status === 'processing') {
-    description = 'Currently processing...';
-  } else if (doc.status === 'failed') {
-    description = 'Processing failed';
-  } else if (doc.status === 'pending') {
-    description = 'Waiting to be processed';
-  } else {
-    description = 'Status unknown';
+    
+    // Add document node with its case_path
+    result.push({
+      name: fileName,
+      docId: doc.document_id,
+      path: doc.case_path,
+      isFolder: false,
+      description: doc.original_filename || doc.document_name || fileName,
+      status: doc.status,
+      importance: doc.importance || determineImportance(doc),
+      page_count: doc.page_count || 0,
+      size: formatSize(doc.size) || 'Unknown',
+    });
+  });
+  
+  // If we created an "Uncategorized" folder but ended up with no documents in it,
+  // remove it from the result
+  if (!hasUncategorizedDocuments && folderMap.has("Uncategorized")) {
+    const index = result.findIndex(item => item.path === "Uncategorized" && item.isFolder);
+    if (index !== -1) {
+      result.splice(index, 1);
+    }
   }
   
-  return description;
+  return result;
+}
+/**
+ * Helper function to determine document importance
+ */
+function determineImportance(doc: any): number {
+  // Just a simple placeholder implementation
+  if (doc.content_types && doc.content_types.text > 10) return 3;
+  if (doc.raptor_levels && doc.raptor_levels.length > 2) return 3;
+  return doc.chunks_count > 10 ? 2 : 1;
+}
+
+/**
+ * Helper function to format file size
+ */
+function formatSize(sizeInBytes?: number): string {
+  if (!sizeInBytes) return 'Unknown';
+  
+  const KB = 1024;
+  const MB = KB * 1024;
+  
+  if (sizeInBytes >= MB) {
+    return `${(sizeInBytes / MB).toFixed(2)} MB`;
+  } else {
+    return `${(sizeInBytes / KB).toFixed(2)} KB`;
+  }
 }

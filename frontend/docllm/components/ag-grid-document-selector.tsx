@@ -12,7 +12,7 @@ import { AllEnterpriseModule } from 'ag-grid-enterprise';
 ModuleRegistry.registerModules([AllEnterpriseModule]);
 
 // Import styles
-// import 'ag-grid-community/styles/ag-grid.css';
+//import 'ag-grid-community/styles/ag-grid.css';
 import 'ag-grid-community/styles/ag-theme-alpine.css';
 
 import { documentApi } from '@/lib/api';
@@ -37,6 +37,29 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
   // Column definitions
   const columnDefs = useMemo(() => [
     {
+      headerName: 'Selection',
+      width: 120,
+      field: 'docId',
+      filter: false,
+      cellRenderer: (params: any) => {
+        if (params.data.isFolder) return null;
+        const isDisabled = ['failed', 'processing'].includes(params.data.status);
+        return (
+          <Checkbox
+            disabled={isDisabled}
+            checked={selectedDocuments.includes(params.value)}
+            onCheckedChange={(checked) => {
+              if (checked) {
+                setSelectedDocuments(prev => [...prev, params.value]);
+              } else {
+                setSelectedDocuments(prev => prev.filter(id => id !== params.value));
+              }
+            }}
+          />
+        );
+      }
+    },
+    {
       field: 'name',
       headerName: 'Document Name',
       cellRenderer: 'agGroupCellRenderer',
@@ -55,19 +78,20 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
           );
         }
       },
-      flex: 2
+      
     },
     {
       field: 'description',
       headerName: 'Description',
-      flex: 2,
-      filter: true
+      filter: true,
+      resizable: true,
     },
     {
       field: 'status',
       headerName: 'Status',
       width: 120,
       filter: true,
+      resizable: false,
       cellRenderer: (params: any) => {
         if (!params.value || params.data.isFolder) return null;
         
@@ -91,7 +115,7 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
     {
       field: 'importance',
       headerName: 'Importance',
-      width: 120,
+      resizable: false,
       filter: 'agNumberColumnFilter',
       cellRenderer: (params: any) => {
         if (!params.value || params.data.isFolder) return null;
@@ -104,36 +128,13 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
     {
       field: 'page_count',
       headerName: 'Pages',
-      width: 100,
       filter: 'agNumberColumnFilter'
     },
     {
       field: 'size',
       headerName: 'Size',
-      width: 100
     },
-    {
-      headerName: 'Selection',
-      width: 120,
-      field: 'docId',
-      filter: false,
-      cellRenderer: (params: any) => {
-        if (params.data.isFolder) return null;
-        
-        return (
-          <Checkbox
-            checked={selectedDocuments.includes(params.value)}
-            onCheckedChange={(checked) => {
-              if (checked) {
-                setSelectedDocuments(prev => [...prev, params.value]);
-              } else {
-                setSelectedDocuments(prev => prev.filter(id => id !== params.value));
-              }
-            }}
-          />
-        );
-      }
-    }
+    
   ], [selectedDocuments]);
   
   // Grid options

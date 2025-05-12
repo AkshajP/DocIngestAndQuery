@@ -127,7 +127,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const queryRequest: QueryRequest = {
         question,
         use_tree: false,
-        top_k: 5,
+        top_k: 10,
       };
 
       const response = await chatApi.submitQuery(chatId, queryRequest);
