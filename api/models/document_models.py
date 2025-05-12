@@ -53,11 +53,13 @@ class DocumentMetadata(BaseModel):
     original_filename: str = Field(..., description="Original filename")
     status: DocumentStatus
     processing_date: Optional[datetime] = None
+    page_count: Optional[int] = None
     chunks_count: Optional[int] = None
     file_type: Optional[str] = None
     language: Optional[str] = None
     content_types: Optional[Dict[str, int]] = None
     raptor_levels: Optional[List[int]] = None
+    case_path: Optional[str] = None 
     
     @classmethod
     def generate_document_id(cls, filename: str) -> str:

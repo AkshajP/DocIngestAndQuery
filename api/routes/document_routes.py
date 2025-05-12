@@ -10,7 +10,7 @@ router = APIRouter(prefix="/ai/documents", tags=["documents"])
 
 @router.get("/")
 async def list_processed_documents(
-    limit: int = Query(10, description="Number of documents per page"),
+    limit: int = Query(100, description="Number of documents per page"),
     offset: int = Query(0, description="Pagination offset"),
     user_id: str = Depends(get_current_user),
     case_id: str = Depends(get_current_case)
@@ -33,7 +33,9 @@ async def list_processed_documents(
                 "document_name": doc.get("original_filename", "Unnamed"),
                 "status": doc.get("status", "Unknown"),
                 "chunks_count": doc.get("chunks_count", 0),
-                "processing_date": doc.get("processing_date")
+                "processing_date": doc.get("processing_date"),
+                "case_path": doc.get("case_path", None),
+                "page_count": doc.get("page_count", None)
             }
             for doc in paginated_documents
         ],

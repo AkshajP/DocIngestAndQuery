@@ -1,20 +1,23 @@
 # Notes
 
+Currently if the document is uploaded, then the case_path attribute needs to be manually set in registry.json 
+to ensure the folder structure is seen else files will be under un-categorized.
+
 ## Future Enhancements
 
 - [ ] Remove welcome message from backend
 - [ ] Add copy and feedback icons and api to frontend
 - [ ] Check why sources are not showing up
-- [ ] Emulate DASH using AG Grid 
-    - [ ] Complexity - considering folder structure as an upload.
-    - [ ] Deciding migration of `registry.json`
 - [ ] Sidebar and DASH modal integration
 - [ ] Stream response
 - [ ] ability to interact with doc processings - what failed
+- [x] Emulate DASH using AG Grid 
+    - [ ] Complexity - considering folder structure as an upload.-- ADD MANUALLY. 
+    - [x] Deciding migration of `registry.json`
 
 ---
 
-- [ ] ag grid interact
+- [x] ag grid interact
 - [x] doc process tracking
 - [ ] AI int for long context answer generation
 
@@ -28,9 +31,16 @@ embeddings generatED folder structure
 case user role documents
 
 ### errors:
-on processing very small file I think: 
-[2025-05-09 12:59:50,621] [   ERROR] upload.py:312 - Error processing document doc_1746775567_Index_Volume_7: Cannot use scipy.linalg.eigh for sparse A with k >= N. Use scipy.linalg.eigh(A.toarray()) or reduce k.
-[2025-05-09 12:59:50,621] [   ERROR] upload.py:363 - Document doc_1746775567_Index_Volume_7 processing failed at processing: Cannot use scipy.linalg.eigh for sparse A with k >= N. Use scipy.linalg.eigh(A.toarray()) or reduce k.
+{"message_id": "msg_1864816287"}	
+15:56:58.473
+retrieval_complete	{"chunks_count": 5, "time": 0.18378996849060059}	
+15:56:58.761
+error	{"error": "'QueryEngine' object has no attribute 'stream_response'"}	
+15:56:58.761
+1
+
+
+modify the retrieve_relevant_chunks to accept tree_level_filter as parameter, putting a filter on the vector db query. i have attached the vector db adapter. also,  i got error	{"error": "'QueryEngine' object has no attribute 'stream_response'"}	
 
 
 Document Selection with AG Grid: Summary & Plan

@@ -63,6 +63,10 @@ class QueryEngine:
                 Never claim the user wrote or said anything that appears in the documents.
                 </system>
 
+                <user_query>
+                {question}
+                </user_query>
+                
                 <previous_conversation>
                 {chat_history}
                 </previous_conversation>
@@ -70,10 +74,6 @@ class QueryEngine:
                 <indexed_documents>
                 {context}
                 </indexed_documents>
-
-                <user_query>
-                {question}
-                </user_query>
 
                 <assistant>
                 """,
@@ -90,7 +90,7 @@ class QueryEngine:
         chat_id: None,
         user_id: None,
         use_tree: bool = False,
-        top_k: int = 5,
+        top_k: int = 10,
         tree_level_filter: Optional[List[int]] = None,  # None = all levels, [0] = original chunks, [1,2,3] = specific summary levels
         chat_history: str = "",
         model_override: Optional[str] = None,
@@ -291,7 +291,8 @@ class QueryEngine:
         case_id: str,
         document_ids: List[str],
         use_tree: bool = False,
-        top_k: int = 5
+        top_k: int = 5,
+        tree_level_filter: Optional[List[int]] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieve relevant chunks based on query embedding.

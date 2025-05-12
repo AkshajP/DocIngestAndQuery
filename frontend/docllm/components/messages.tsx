@@ -17,6 +17,7 @@ interface MessagesProps {
   reload: UseChatHelpers['reload'];
   isReadonly: boolean;
   isArtifactVisible: boolean;
+  streamingMessageId?: string;
 }
 
 function PureMessages({
@@ -27,6 +28,7 @@ function PureMessages({
   setMessages,
   reload,
   isReadonly,
+  streamingMessageId
 }: MessagesProps) {
   const {
     containerRef: messagesContainerRef,
@@ -51,7 +53,8 @@ function PureMessages({
           key={message.id}
           chatId={chatId}
           message={message}
-          isLoading={status === 'streaming' && messages.length - 1 === index}
+          isLoading={status === 'streaming' && messages.length - 1 === index && !streamingMessageId}
+          isStreaming={streamingMessageId === message.id} // Pass streaming state
           vote={
             votes
               ? votes.find((vote) => vote.messageId === message.id)
@@ -66,9 +69,12 @@ function PureMessages({
         />
       ))}
 
+      {/* Only show ThinkingMessage if we're not streaming (since streaming shows the actual message) */}
       {status === 'submitted' &&
         messages.length > 0 &&
-        messages[messages.length - 1].role === 'user' && <ThinkingMessage />}
+        messages[messages.length - 1].role === 'user' && 
+        !streamingMessageId && 
+        <ThinkingMessage />}
 
       <motion.div
         ref={messagesEndRef}

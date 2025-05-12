@@ -335,7 +335,7 @@ async def submit_query(
     request: QueryRequest,
     background_tasks: BackgroundTasks,
     chat_id: str = Path(..., description="Chat ID"),
-    stream: bool = Query(False, description="Stream the response as Server-Sent Events"),
+    stream: bool = Query(True, description="Stream the response as Server-Sent Events"),
     user_id: str = Depends(get_current_user),
     case_id: str = Depends(get_current_case)
 ):
@@ -448,7 +448,7 @@ async def submit_query(
             chat_id=chat_id,
             user_id=user_id,
             use_tree=request.use_tree if request.use_tree is not None else False,
-            top_k=request.top_k if request.top_k is not None else 5,
+            top_k=request.top_k if request.top_k is not None else 10,
             chat_history=chat_history,
             model_override=request.model_override,
             tree_level_filter=request.tree_level_filter
@@ -622,16 +622,18 @@ async def _stream_query_response(
     
     # Get relevant documents first
     retrieval_start = time.time()
-    
+    query_embedding = await asyncio.to_thread(
+        query_service.embeddings.embed_query,
+        question
+    )
     # Get document chunks
     chunks = await asyncio.to_thread(
         query_service.retrieve_relevant_chunks,
-        query=question,
+        query_embedding=query_embedding,  # Use correct parameter name and embedding vector
         case_id=case_id, 
         document_ids=document_ids,
         use_tree=use_tree,
-        top_k=top_k,
-        tree_level_filter=tree_level_filter
+        top_k=top_k
     )
     
     retrieval_time = time.time() - retrieval_start

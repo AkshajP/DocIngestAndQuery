@@ -113,23 +113,60 @@ import {
       });
     },
     
-    streamQuery: async (chatId: string, data: QueryRequest): Promise<Response> => {
-      // This function returns the raw Response object for streaming
-      const response = await fetch(`${API_BASE_URL}/chats/${chatId}/query?stream=true`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
+    streamQuery: async (chatId, question, options = {}, callbacks = {}) => {
+      const queryParams = new URLSearchParams({
+        stream: 'true'
       });
       
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `API error: ${response.status}`);
-      }
+      const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/chats/${chatId}/query?${queryParams}`;
       
-      return response;
-    }
+      const eventSource = new EventSource(url, { 
+        withCredentials: true 
+      });
+      
+      // Handle different event types
+      eventSource.addEventListener('start', (event) => {
+        const data = JSON.parse(event.data);
+        callbacks.onStart?.(data);
+      });
+      
+      eventSource.addEventListener('retrieval_complete', (event) => {
+        const data = JSON.parse(event.data);
+        callbacks.onRetrievalComplete?.(data);
+      });
+      
+      eventSource.addEventListener('sources', (event) => {
+        const data = JSON.parse(event.data);
+        callbacks.onSources?.(data.sources);
+      });
+      
+      eventSource.addEventListener('token', (event) => {
+        const data = JSON.parse(event.data);
+        callbacks.onToken?.(data.token);
+      });
+      
+      eventSource.addEventListener('complete', (event) => {
+        const data = JSON.parse(event.data);
+        callbacks.onComplete?.(data);
+        eventSource.close();
+      });
+      
+      eventSource.addEventListener('error', (event) => {
+        const data = event.data ? JSON.parse(event.data) : { error: 'Unknown error' };
+        callbacks.onError?.(data);
+        eventSource.close();
+      });
+      
+      // Handle connection errors
+      eventSource.onerror = (error) => {
+        callbacks.onError?.({ error: 'Connection error' });
+        eventSource.close();
+      };
+      
+      // Return control to allow manual closing
+      return {
+        close: () => eventSource.close()
+      };},
   };
   
   export const adminApi = {

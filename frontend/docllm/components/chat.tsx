@@ -37,7 +37,8 @@ export function Chat({
   autoResume: boolean;
 }) {
   const { mutate } = useSWRConfig();
-
+  const [streamingMessageId, setStreamingMessageId] = useState<string | undefined>(undefined);
+  
   const { visibilityType } = useChatVisibility({
     chatId: id,
     initialVisibilityType,
@@ -67,9 +68,11 @@ export function Chat({
       selectedVisibilityType: visibilityType,
     }),
     onFinish: () => {
+      setStreamingMessageId(undefined); // Clear streaming ID when finished
       mutate(unstable_serialize(getChatHistoryPaginationKey));
     },
     onError: (error) => {
+      setStreamingMessageId(undefined); // Clear streaming ID on error
       toast({
         type: 'error',
         description: error.message,
@@ -77,40 +80,55 @@ export function Chat({
     },
   });
 
-  useEffect(() => {
-    if (autoResume) {
-      experimental_resume();
-    }
-
-    // note: this hook has no dependencies since it only needs to run once
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const searchParams = useSearchParams();
-  const query = searchParams.get('query');
-
-  const [hasAppendedQuery, setHasAppendedQuery] = useState(false);
-
-  useEffect(() => {
-    if (query && !hasAppendedQuery) {
-      append({
-        role: 'user',
-        content: query,
+  // Add a custom submit handler that manages streaming state
+  const handleStreamingSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    
+    if (!input.trim()) return;
+    
+    // Add the user message immediately
+    const userMessageId = generateUUID();
+    append({
+      id: userMessageId,
+      role: 'user',
+      content: input.trim(),
+    });
+    
+    // Prepare for streaming response
+    const assistantMessageId = generateUUID();
+    setStreamingMessageId(assistantMessageId);
+    
+    // Add placeholder assistant message
+    append({
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '', // Empty content that will be filled by streaming
+    });
+    
+    setInput('');
+    
+    // Start the streaming request
+    // You'll need to implement this using your EventSource approach
+    // and update the message content as tokens arrive
+    try {
+      // Here we would call your streaming endpoint
+      // For now, we'll just simulate it
+      
+      setTimeout(() => {
+        // Once streaming is complete, clear the streaming ID
+        setStreamingMessageId(undefined);
+      }, 3000); // Simulated streaming time
+    } catch (error) {
+      console.error('Streaming error:', error);
+      setStreamingMessageId(undefined);
+      toast({
+        type: 'error',
+        description: 'Failed to stream response',
       });
-
-      setHasAppendedQuery(true);
-      window.history.replaceState({}, '', `/chat/${id}`);
     }
-  }, [query, append, hasAppendedQuery, id]);
-
-  const { data: votes } = useSWR<Array<Vote>>(
-    messages.length >= 2 ? `/api/vote?chatId=${id}` : null,
-    fetcher,
-  );
-
-  const [attachments, setAttachments] = useState<Array<Attachment>>([]);
-  const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
-
+  };
+  
+  // Pass the streaming state to Messages component
   return (
     <>
       <div className="flex flex-col min-w-0 h-dvh bg-background">
@@ -131,23 +149,31 @@ export function Chat({
           reload={reload}
           isReadonly={isReadonly}
           isArtifactVisible={isArtifactVisible}
+          streamingMessageId={streamingMessageId} // Pass streaming message ID
         />
 
-        <form className="flex mx-auto px-4 bg-background pb-4 md:pb-6 gap-2 w-full md:max-w-3xl">
+        <form 
+          className="flex mx-auto px-4 bg-background pb-4 md:pb-6 gap-2 w-full md:max-w-3xl"
+          onSubmit={handleStreamingSubmit} // Use our custom submit handler
+        >
           {!isReadonly && (
             <MultimodalInput
               chatId={id}
               input={input}
               setInput={setInput}
-              handleSubmit={handleSubmit}
+              handleSubmit={handleStreamingSubmit} // Use our custom submit handler
               status={status}
-              stop={stop}
+              stop={() => {
+                stop();
+                setStreamingMessageId(undefined);
+              }}
               attachments={attachments}
               setAttachments={setAttachments}
               messages={messages}
               setMessages={setMessages}
               append={append}
               selectedVisibilityType={visibilityType}
+              isStreaming={!!streamingMessageId} // Pass streaming state
             />
           )}
         </form>
@@ -157,9 +183,12 @@ export function Chat({
         chatId={id}
         input={input}
         setInput={setInput}
-        handleSubmit={handleSubmit}
+        handleSubmit={handleStreamingSubmit} // Use our custom submit handler
         status={status}
-        stop={stop}
+        stop={() => {
+          stop();
+          setStreamingMessageId(undefined);
+        }}
         attachments={attachments}
         setAttachments={setAttachments}
         append={append}

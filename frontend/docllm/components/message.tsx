@@ -25,6 +25,7 @@ const PurePreviewMessage = ({
   message,
   vote,
   isLoading,
+  isStreaming,
   setMessages,
   reload,
   isReadonly,
@@ -34,22 +35,66 @@ const PurePreviewMessage = ({
   message: UIMessage;
   vote: Vote | undefined;
   isLoading: boolean;
+  isStreaming?: boolean;
   setMessages: UseChatHelpers['setMessages'];
   reload: UseChatHelpers['reload'];
   isReadonly: boolean;
   requiresScrollPadding: boolean;
 }) => {
   const [mode, setMode] = useState<'view' | 'edit'>('view');
+  const renderTextContent = (part: { type: string; text: string }, key: string) => {
+    if (mode === 'view') {
+      return (
+        <div key={key} className="flex flex-row gap-2 items-start">
+          {message.role === 'user' && !isReadonly && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  data-testid="message-edit-button"
+                  variant="ghost"
+                  className="px-2 h-fit rounded-full text-muted-foreground opacity-0 group-hover/message:opacity-100"
+                  onClick={() => {
+                    setMode('edit');
+                  }}
+                >
+                  <PencilEditIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Edit message</TooltipContent>
+            </Tooltip>
+          )}
 
+          <div
+            data-testid="message-content"
+            className={cn('flex flex-col gap-4', {
+              'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
+                message.role === 'user',
+            })}
+          >
+            <Markdown>{sanitizeText(part.text)}</Markdown>
+            
+            {/* Add streaming indicator */}
+            {isStreaming && message.role === 'assistant' && (
+              <div className="typing-indicator inline-flex items-center mt-1">
+                <span className="dot"></span>
+                <span className="dot"></span>
+                <span className="dot"></span>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
   return (
     <AnimatePresence>
-      <motion.div
-        data-testid={`message-${message.role}`}
-        className="w-full mx-auto max-w-3xl px-4 group/message"
-        initial={{ y: 5, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        data-role={message.role}
-      >
+    <motion.div
+      data-testid={`message-${message.role}`}
+      className="w-full mx-auto max-w-3xl px-4 group/message"
+      initial={{ y: 5, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      data-role={message.role}
+      data-streaming={isStreaming ? 'true' : 'false'} // Add data attribute for streaming
+    >
         <div
           className={cn(
             'flex gap-4 w-full group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl',
@@ -103,37 +148,7 @@ const PurePreviewMessage = ({
 
               if (type === 'text') {
                 if (mode === 'view') {
-                  return (
-                    <div key={key} className="flex flex-row gap-2 items-start">
-                      {message.role === 'user' && !isReadonly && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              data-testid="message-edit-button"
-                              variant="ghost"
-                              className="px-2 h-fit rounded-full text-muted-foreground opacity-0 group-hover/message:opacity-100"
-                              onClick={() => {
-                                setMode('edit');
-                              }}
-                            >
-                              <PencilEditIcon />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Edit message</TooltipContent>
-                        </Tooltip>
-                      )}
-
-                      <div
-                        data-testid="message-content"
-                        className={cn('flex flex-col gap-4', {
-                          'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
-                            message.role === 'user',
-                        })}
-                      >
-                        <Markdown>{sanitizeText(part.text)}</Markdown>
-                      </div>
-                    </div>
-                  );
+                  return renderTextContent(part, key);
                 }
 
                 if (mode === 'edit') {
