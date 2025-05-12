@@ -37,7 +37,8 @@ export interface DocumentProcessingStages {
 
 export interface DocumentMetadata {
   document_id: string;
-  document_name: string;  
+  document_name: string;
+  case_path: string;
   status: DocumentStatus;
   chunks_count?: number;
   processing_date?: string;
