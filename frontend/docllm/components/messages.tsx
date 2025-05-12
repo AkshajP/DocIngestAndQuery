@@ -53,7 +53,12 @@ function PureMessages({
           key={message.id}
           chatId={chatId}
           message={message}
-          isLoading={status === 'streaming' && messages.length - 1 === index && !streamingMessageId}
+          isLoading={
+            status === 'streaming' &&
+            messages.length - 1 === index &&
+            streamingMessageId === message.id
+          }
+          
           isStreaming={streamingMessageId === message.id} // Pass streaming state
           vote={
             votes
@@ -71,10 +76,11 @@ function PureMessages({
 
       {/* Only show ThinkingMessage if we're not streaming (since streaming shows the actual message) */}
       {status === 'submitted' &&
-        messages.length > 0 &&
-        messages[messages.length - 1].role === 'user' && 
-        !streamingMessageId && 
-        <ThinkingMessage />}
+      messages.length > 0 &&
+      messages[messages.length - 1].role === 'user' &&
+      !streamingMessageId && (
+        <ThinkingMessage />
+      )}
 
       <motion.div
         ref={messagesEndRef}

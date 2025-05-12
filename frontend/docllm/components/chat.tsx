@@ -107,24 +107,112 @@ export function Chat({
     
     setInput('');
     
-    // Start the streaming request
-    // You'll need to implement this using your EventSource approach
-    // and update the message content as tokens arrive
+    // Connect directly to streaming endpoint
+    let eventSource: EventSource | null = null;
+    let accumulatedContent = '';
+    
     try {
-      // Here we would call your streaming endpoint
-      // For now, we'll just simulate it
+      // Generate a URL with the streaming parameter
+      const streamUrl = new URL(`/api/ai/chats/${id}/query`, window.location.origin);
+      streamUrl.searchParams.append('stream', 'true');
       
-      setTimeout(() => {
-        // Once streaming is complete, clear the streaming ID
-        setStreamingMessageId(undefined);
-      }, 3000); // Simulated streaming time
+      // Create headers for EventSource - needed for POST request
+      const headers = new Headers();
+      headers.append('Content-Type', 'application/json');
+      
+      // Create a controller to be able to abort the connection
+      const controller = new AbortController();
+      
+      // Setup the request payload
+      const payload = JSON.stringify({
+        question: input.trim(),
+        use_tree: false, // Set your defaults or get from state
+        top_k: 10, // Set your defaults or get from state
+      });
+      
+      // Since EventSource only supports GET by default, we need to use fetch with ReadableStream
+      const response = await fetch(streamUrl, {
+        method: 'POST',
+        headers: headers,
+        body: payload,
+        signal: controller.signal
+      });
+      
+      if (!response.ok || !response.body) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+      
+      // Setup stream processing
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      // Process the stream
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        // Decode chunk
+        const chunk = decoder.decode(value, { stream: true });
+        
+        // Process SSE format (split by double newlines)
+        const events = chunk.split('\n\n');
+        for (const event of events) {
+          if (!event.trim()) continue;
+          
+          try {
+            // Extract event type and data
+            const eventTypeMatch = event.match(/^event: (.+)$/m);
+            const dataMatch = event.match(/^data: (.+)$/m);
+            
+            if (eventTypeMatch && dataMatch) {
+              const eventType = eventTypeMatch[1];
+              const dataStr = dataMatch[1];
+              
+              if (eventType === 'token') {
+                // Parse token data
+                const data = JSON.parse(dataStr);
+                accumulatedContent += data.token;
+                
+                // Update message with new content
+                setMessages(messages => 
+                  messages.map(msg => 
+                    msg.id === assistantMessageId 
+                      ? { ...msg, content: accumulatedContent } 
+                      : msg
+                  )
+                );
+              } 
+              else if (eventType === 'error') {
+                // Handle error events
+                const data = JSON.parse(dataStr);
+                toast({
+                  type: 'error',
+                  description: data.error || 'An error occurred',
+                });
+                controller.abort();
+                break;
+              }
+              else if (eventType === 'complete') {
+                // Handle completion
+                console.log('Stream completed successfully');
+                break;
+              }
+            }
+          } catch (err) {
+            console.error('Error processing stream event:', event, err);
+          }
+        }
+      }
     } catch (error) {
       console.error('Streaming error:', error);
       setStreamingMessageId(undefined);
       toast({
         type: 'error',
-        description: 'Failed to stream response',
+        description: error instanceof Error ? error.message : 'Failed to stream response',
       });
+    } finally {
+      // Clean up and reset state
+      setStreamingMessageId(undefined);
     }
   };
   

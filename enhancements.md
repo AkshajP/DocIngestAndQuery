@@ -40,7 +40,7 @@ error	{"error": "'QueryEngine' object has no attribute 'stream_response'"}
 1
 
 
-modify the retrieve_relevant_chunks to accept tree_level_filter as parameter, putting a filter on the vector db query. i have attached the vector db adapter. also,  i got error	{"error": "'QueryEngine' object has no attribute 'stream_response'"}	
+
 
 
 Document Selection with AG Grid: Summary & Plan

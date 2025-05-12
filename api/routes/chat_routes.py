@@ -702,10 +702,10 @@ async def _stream_query_response(
             history_service.chat_repo.update_message_status,
             message_id=message_id,
             status="completed",
-            content=full_answer,
-            sources=chunks,
-            token_count=token_count,
-            model_used=model_preference,
+            # content=full_answer,
+            # sources=chunks,
+            #token_count=token_count,
+            #model_used=model_preference,
             response_time=int(total_time * 1000)  # ms
         )
         

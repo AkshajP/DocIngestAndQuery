@@ -2,7 +2,9 @@ import logging
 import time
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple, Union
-
+from typing import AsyncGenerator
+import json
+import requests
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -303,6 +305,7 @@ class QueryEngine:
             document_ids: List of document IDs to search
             use_tree: Whether to use tree-based retrieval
             top_k: Number of chunks to retrieve
+            tree_level_filter: Filter by tree level (None=all, [0]=original chunks only, [1,2,3]=summaries)
             
         Returns:
             List of relevant chunks
@@ -314,13 +317,24 @@ class QueryEngine:
             # For tree-based retrieval, first get higher level nodes
             content_types = None
             
+            # Set up chunk_types filter if tree_level_filter is specified
+            chunk_types = None
+            if tree_level_filter is not None:
+                if 0 in tree_level_filter and len(tree_level_filter) == 1:
+                    # Filter for original chunks only
+                    chunk_types = ["original"]
+                elif 0 not in tree_level_filter and tree_level_filter:
+                    # Filter for summary chunks only
+                    chunk_types = ["summary"]
+                    
             # First search for summary nodes (tree nodes)
             chunks = self.vector_store.search(
                 query_embedding=query_embedding,
                 case_ids=case_ids,
                 document_ids=document_ids,
                 content_types=content_types,
-                chunk_types=["summary"],
+                chunk_types=chunk_types,
+                tree_levels=tree_level_filter,
                 top_k=top_k
             )
             
@@ -363,17 +377,18 @@ class QueryEngine:
             else:
                 # Fall back to flat retrieval if no summary nodes found
                 logger.info("No summary nodes found, falling back to flat retrieval")
-                return self._flat_retrieval(query_embedding, case_ids, document_ids, top_k)
+                return self._flat_retrieval(query_embedding, case_ids, document_ids, top_k, tree_level_filter)
         else:
             # Flat retrieval - just get original chunks
-            return self._flat_retrieval(query_embedding, case_ids, document_ids, top_k)
+            return self._flat_retrieval(query_embedding, case_ids, document_ids, top_k, tree_level_filter)
     
     def _flat_retrieval(
         self, 
         query_embedding: List[float],
         case_ids: List[str],
         document_ids: List[str],
-        top_k: int
+        top_k: int,
+        tree_level_filter: Optional[List[int]] = None
     ) -> List[Dict[str, Any]]:
         """
         Perform flat retrieval of original chunks.
@@ -383,15 +398,27 @@ class QueryEngine:
             case_ids: List of case IDs
             document_ids: List of document IDs
             top_k: Number of chunks to retrieve
+            tree_level_filter: Optional filter by tree level
             
         Returns:
             List of relevant chunks
         """
+        # Set up chunk_types filter based on tree_level_filter
+        chunk_types = None
+        if tree_level_filter is not None:
+            if 0 in tree_level_filter and len(tree_level_filter) == 1:
+                # Filter for original chunks only
+                chunk_types = ["original"]
+            elif 0 not in tree_level_filter and tree_level_filter:
+                # Filter for summary chunks only
+                chunk_types = ["summary"]
+                
         return self.vector_store.search(
             query_embedding=query_embedding,
             case_ids=case_ids,
             document_ids=document_ids,
-            chunk_types=["original"],
+            chunk_types=chunk_types,
+            tree_levels=tree_level_filter,
             top_k=top_k
         )
     
@@ -513,6 +540,86 @@ class QueryEngine:
         estimated_tokens = int(estimated_tokens * 1.1)
         
         return estimated_tokens
+    
+    async def stream_response(
+        self,
+        question: str,
+        chunks: List[Dict[str, Any]],
+        chat_history: str = "",
+        model: Optional[str] = None
+    ) -> AsyncGenerator[str, None]:
+        """
+        Stream the response token by token from the LLM.
+        
+        Args:
+            question: User question
+            chunks: Retrieved chunks with content and metadata
+            chat_history: Formatted chat history text
+            model: Optional model override
+            
+        Yields:
+            Response tokens as they are generated
+        """
+        # Select LLM based on preference if provided
+        llm_name = model or self.config.ollama.model
+        
+        try:
+            # Build context from chunks
+            context = self._build_context_from_chunks(chunks)
+            
+            # Format the prompt
+            prompt = self.query_prompt.format(
+                context=context,
+                question=question,
+                chat_history=chat_history
+            )
+            
+            # Log the prompt (for debugging)
+            logger.info(f"Streaming response for question: {question}")
+            logger.info(f"Using model: {llm_name}")
+            
+            # Ollama doesn't have a native streaming interface in langchain
+            # So we'll use the raw Ollama API through requests
+            import requests
+            
+            # Set up the API call to Ollama
+            url = f"{self.config.ollama.base_url}/api/generate"
+            headers = {"Content-Type": "application/json"}
+            data = {
+                "model": llm_name,
+                "prompt": prompt,
+                "stream": True,
+                "options": {
+                    "temperature": self.config.ollama.temperature
+                }
+            }
+            
+            # Make the streaming API call
+            with requests.post(url, json=data, headers=headers, stream=True) as response:
+                response.raise_for_status()
+                
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                        
+                    # Parse the JSON response
+                    try:
+                        chunk = json.loads(line)
+                        token = chunk.get("response", "")
+                        
+                        if token:
+                            yield token
+                            
+                        # Check if done
+                        if chunk.get("done", False):
+                            break
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to decode JSON from Ollama: {line}")
+                        continue
+                        
+        except Exception as e:
+            logger.error(f"Error streaming response: {str(e)}")
+            yield f"Error generating response: {str(e)}"
     
     def _format_context(self, chunks: List[Dict[str, Any]]) -> str:
         """
