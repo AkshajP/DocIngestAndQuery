@@ -5,11 +5,11 @@ to ensure the folder structure is seen else files will be under un-categorized.
 
 ## Future Enhancements
 
-- [ ] Remove welcome message from backend
-- [ ] Add copy and feedback icons and api to frontend
 - [ ] Check why sources are not showing up
 - [ ] Sidebar and DASH modal integration
 - [ ] Stream response
+- [ ] Remove welcome message from backend
+- [ ] Add copy and feedback icons and api to frontend
 - [ ] ability to interact with doc processings - what failed
 - [x] Emulate DASH using AG Grid 
     - [ ] Complexity - considering folder structure as an upload.-- ADD MANUALLY. 

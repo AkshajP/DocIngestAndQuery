@@ -11,7 +11,7 @@
     },
     "ollama": {
       "base_url": "http://localhost:11434",
-      "model": "deepseek-r1:14b",
+      "model": "llama3.2",
       "embed_model": "llama3.2",
       "temperature": 0.2,
       "max_tokens": 3000

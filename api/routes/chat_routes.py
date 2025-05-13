@@ -693,6 +693,11 @@ async def _stream_query_response(
                     message_id=message_id,
                     content=full_answer
                 )
+        await asyncio.to_thread(
+            history_service.chat_repo.update_message_content,
+            message_id=message_id,
+            content=full_answer
+        )
         
         llm_time = time.time() - llm_start
         total_time = time.time() - start_time
