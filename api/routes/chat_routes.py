@@ -466,7 +466,10 @@ async def submit_query(
             message_id=message_id,
             status="completed",
             error_details=None,
-            response_time=int(result.get("time_taken", 0) * 1000)  # Convert to ms
+            response_time=int(result.get("time_taken", 0) * 1000),  # Convert to ms
+            sources=result["sources"],  # Add sources
+            token_count=result.get("input_tokens", 0) + result.get("output_tokens", 0),  # Add token count
+            model_used=result.get("model_used")  # Add model used
         )
         
         # Format result for API response
@@ -707,12 +710,12 @@ async def _stream_query_response(
             history_service.chat_repo.update_message_status,
             message_id=message_id,
             status="completed",
-            # content=full_answer,
-            # sources=chunks,
-            #token_count=token_count,
-            #model_used=model_preference,
-            response_time=int(total_time * 1000)  # ms
+            response_time=int(total_time * 1000),  # ms
+            sources=chunks,  # Add sources (from retrieved chunks)
+            token_count=token_count,  # Add token count
+            model_used=model_preference # Add model used
         )
+
         
         # Send completion event
         yield "event: complete\n"

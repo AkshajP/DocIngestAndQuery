@@ -517,7 +517,10 @@ class ChatRepository:
         message_id: str, 
         status: str, 
         error_details: Optional[Dict[str, Any]] = None, 
-        response_time: Optional[int] = None
+        response_time: Optional[int] = None,
+        sources: Optional[List[Dict[str, Any]]] = None,  # Add this
+        token_count: Optional[int] = None,  # Add this
+        model_used: Optional[str] = None  # Add this
     ) -> Optional[Message]:
         """
         Update message status and related fields.
@@ -527,6 +530,9 @@ class ChatRepository:
             status: New status
             error_details: Optional error details for failed status
             response_time: Optional response time
+            sources: Optional sources used for the response
+            token_count: Optional token count used
+            model_used: Optional model name used
             
         Returns:
             Updated Message object or None if not found
@@ -543,6 +549,18 @@ class ChatRepository:
         if response_time is not None:
             update_parts.append("response_time = %s")
             params.append(response_time)
+            
+        if sources is not None:
+            update_parts.append("sources = %s")
+            params.append(json.dumps(sources))
+            
+        if token_count is not None:
+            update_parts.append("token_count = %s")
+            params.append(token_count)
+            
+        if model_used is not None:
+            update_parts.append("model_used = %s")
+            params.append(model_used)
         
         # Add message_id as last parameter
         params.append(message_id)

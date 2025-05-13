@@ -44,15 +44,28 @@ import {
       const queryParams = new URLSearchParams();
       if (params?.limit) queryParams.append("limit", params.limit.toString());
       if (params?.offset) queryParams.append("offset", params.offset.toString());
-      
+  
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
       return fetchWithErrorHandling<DocumentListResponse>(`/documents/${queryString}`);
     },
-    
+  
     getDocument: async (documentId: string): Promise<DocumentDetailResponse> => {
       return fetchWithErrorHandling<DocumentDetailResponse>(`/documents/${documentId}`);
+    },
+  
+    getDocumentDetails: async (documentId: string): Promise<any> => {
+      const response = await fetch(`/api/ai/documents/${documentId}`);
+      if (!response.ok) {
+        throw new Error("Failed to fetch document details");
+      }
+      return response.json();
+    },
+  
+    getPageUrl: (documentId: string, pageNumber: number): string => {
+      return `/api/ai/documents/${documentId}/page/${pageNumber}`;
     }
   };
+  
   
   // Chat APIs
   export const chatApi = {

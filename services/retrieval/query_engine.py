@@ -147,6 +147,7 @@ class QueryEngine:
             query_embedding=query_embedding,
             case_ids=case_ids,
             document_ids=document_ids,
+            content_types=["text", "table"],
             tree_levels=tree_level_filter,
             chunk_types=chunk_types,
             top_k=top_k
@@ -332,7 +333,7 @@ class QueryEngine:
                 query_embedding=query_embedding,
                 case_ids=case_ids,
                 document_ids=document_ids,
-                content_types=content_types,
+                content_types=["text", "table"],
                 chunk_types=chunk_types,
                 tree_levels=tree_level_filter,
                 top_k=top_k
@@ -417,6 +418,7 @@ class QueryEngine:
             query_embedding=query_embedding,
             case_ids=case_ids,
             document_ids=document_ids,
+            content_types=["text", "table"],
             chunk_types=chunk_types,
             tree_levels=tree_level_filter,
             top_k=top_k

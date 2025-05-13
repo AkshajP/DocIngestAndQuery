@@ -7,13 +7,15 @@ to ensure the folder structure is seen else files will be under un-categorized.
 
 - [ ] Check why sources are not showing up
 - [ ] Sidebar and DASH modal integration
-- [ ] Stream response
+- [ ] Regenerated messages should be multi-view
+- [ ] Filter expressions for text and table content from vector db
 - [ ] Remove welcome message from backend
 - [ ] Add copy and feedback icons and api to frontend
 - [ ] ability to interact with doc processings - what failed
 - [x] Emulate DASH using AG Grid 
     - [ ] Complexity - considering folder structure as an upload.-- ADD MANUALLY. 
     - [x] Deciding migration of `registry.json`
+- [x] Stream response
 
 ---
 

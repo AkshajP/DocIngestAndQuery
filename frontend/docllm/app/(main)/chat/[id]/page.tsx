@@ -22,15 +22,14 @@ import {
 } from 'lucide-react';
 import { Message } from '@/types/chat';
 
-// Add isStreaming prop to MessageItem
 interface MessageItemProps {
   message: Message;
   onRegenerate?: () => void;
-  onViewSource?: (documentId: string) => void;
-  isStreaming?: boolean; // Add this prop
+  onViewSource?: (documentId: string, sourceIndex: number, pageNumber: number, bbox: number[]) => void;
+  isStreaming?: boolean;
 }
 
-function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: MessageItemProps) {
+export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: MessageItemProps) {
   const [showSources, setShowSources] = useState(false);
   
   return (
@@ -46,7 +45,6 @@ function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: Messa
                 {message.content}
               </ReactMarkdown>
               
-              {/* Add streaming indicator */}
               {isStreaming && message.role === 'assistant' && (
                 <div className="typing-indicator inline-flex items-center mt-1">
                   <span className="dot"></span>
@@ -68,22 +66,35 @@ function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: Messa
                 
                 {showSources && (
                   <div className="mt-2 space-y-2">
-                    {message.sources.map((source, index) => (
-                      <div key={index} className="p-2 border rounded-md text-sm">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-medium">Source {index + 1}</span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onViewSource && onViewSource(source.document_id)}
-                          >
-                            <FileTextIcon className="h-4 w-4 mr-1" />
-                            View in document
-                          </Button>
+                    {message.sources.map((source, index) => {
+                      // Extract the first bounding box and page number if available
+                      const originalBoxes = source.original_boxes || [];
+                      const firstBox = originalBoxes.length > 0 ? originalBoxes[0] : null;
+                      const pageNumber = firstBox?.original_page_index || 0;
+                      const bbox = firstBox?.bbox || [0, 0, 0, 0];
+                      
+                      return (
+                        <div key={index} className="p-2 border rounded-md text-sm">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-medium">Source {index + 1}</span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => onViewSource && onViewSource(
+                                source.document_id, 
+                                index, 
+                                pageNumber,
+                                bbox
+                              )}
+                            >
+                              <FileTextIcon className="h-4 w-4 mr-1" />
+                              View in document
+                            </Button>
+                          </div>
+                          <p className="text-muted-foreground">{source.content}</p>
                         </div>
-                        <p className="text-muted-foreground">{source.content}</p>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -96,7 +107,6 @@ function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: Messa
                   size="sm"
                   onClick={onRegenerate}
                 >
-                  <RefreshCwIcon className="h-4 w-4 mr-1" />
                   Regenerate response
                 </Button>
               </div>
@@ -230,18 +240,25 @@ export default function ChatPage() {
     }
   };
 
-  const handleViewSource = async (documentId: string, messageId: string) => {
+  const handleViewSource = async (
+    documentId: string, 
+    sourceIndex: number, 
+    pageNumber: number,
+    bbox: number[]
+  ) => {
     try {
       setLoadingHighlight(true);
-      const url = await highlightDocumentSource(chatId, messageId, documentId);
-      setHighlightUrl(url);
-      // Here you would show a modal or viewer for the highlighted PDF
+      
+      // Construct the URL with specific page and annotation information
+      const url = `/documents/viewer/${documentId}?page=${pageNumber + 1}&bbox=${bbox.join(',')}&sourceIndex=${sourceIndex}`;
+      
+      // Open in a new tab
       window.open(url, '_blank');
     } catch (error) {
-      console.error('Failed to load document highlight:', error);
+      console.error('Failed to open document viewer:', error);
       toast({
         type: 'error',
-        description: 'Failed to load document highlight. Please try again.'
+        description: 'Failed to open document viewer. Please try again.'
       });
     } finally {
       setLoadingHighlight(false);
@@ -293,21 +310,11 @@ export default function ChatPage() {
                 <MessageItem 
                   key={message.id}
                   message={message}
-                  isStreaming={streamingMessageId === message.id} // Pass streaming state
+                  isStreaming={streamingMessageId === message.id}
                   onRegenerate={message.role === 'assistant' ? () => handleRegenerate(message.id) : undefined}
-                  onViewSource={(documentId) => handleViewSource(documentId, message.id)}
+                  onViewSource={handleViewSource}
                 />
               ))}
-              {sending && !streaming && (
-                <div className="py-4 bg-muted/30">
-                  <div className="max-w-3xl mx-auto px-4">
-                    <div className="flex items-center">
-                      <LoaderIcon className="animate-spin mr-2" />
-                      <span>Generating response...</span>
-                    </div>
-                  </div>
-                </div>
-              )}
               <div ref={messageEndRef} />
             </div>
           )}
