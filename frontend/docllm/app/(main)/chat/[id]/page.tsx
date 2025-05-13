@@ -55,50 +55,60 @@ export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }
             </div>
             
             {message.sources && message.sources.length > 0 && (
-              <div className="mt-2">
-                <Button 
-                  variant="ghost" 
-                  size="sm"
-                  onClick={() => setShowSources(!showSources)}
-                >
-                  {showSources ? 'Hide Sources' : 'Show Sources'}
-                </Button>
+  <div className="mt-2">
+    <Button 
+      variant="ghost" 
+      size="sm"
+      onClick={() => setShowSources(!showSources)}
+    >
+      {showSources ? 'Hide Sources' : 'Show Sources'}
+    </Button>
+    
+    {showSources && (
+      <div className="mt-2 space-y-2">
+        {message.sources.map((source, index) => {
+          // Extract the boxes from the correct location (metadata.original_boxes)
+          const originalBoxes = source.metadata?.original_boxes || [];
+          const firstBox = originalBoxes.length > 0 ? originalBoxes[0] : null;
+          const pageNumber = firstBox?.original_page_index || 0;
+          const bbox = firstBox?.bbox || [0, 0, 0, 0];
+          
+          // Check if this is a summary chunk
+          const isOriginalChunk = source.chunk_type === 'original';
+          
+          return (
+            <div key={index} className="p-2 border rounded-md text-sm">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-medium">
+                  {source.chunk_type === 'summary' ? 'Internally Processed Document' : `Source ${index + 1}`}
+                </span>
                 
-                {showSources && (
-                  <div className="mt-2 space-y-2">
-                    {message.sources.map((source, index) => {
-                      // Extract the first bounding box and page number if available
-                      const originalBoxes = source.original_boxes || [];
-                      const firstBox = originalBoxes.length > 0 ? originalBoxes[0] : null;
-                      const pageNumber = firstBox?.original_page_index || 0;
-                      const bbox = firstBox?.bbox || [0, 0, 0, 0];
-                      
-                      return (
-                        <div key={index} className="p-2 border rounded-md text-sm">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="font-medium">Source {index + 1}</span>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => onViewSource && onViewSource(
-                                source.document_id, 
-                                index, 
-                                pageNumber,
-                                bbox
-                              )}
-                            >
-                              <FileTextIcon className="h-4 w-4 mr-1" />
-                              View in document
-                            </Button>
-                          </div>
-                          <p className="text-muted-foreground">{source.content}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
+                {/* Only show "View in document" button for original chunks */}
+                {isOriginalChunk && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onViewSource && onViewSource(
+                      source.document_id, 
+                      index, 
+                      pageNumber,
+                      bbox
+                    )}
+                  >
+                    <FileTextIcon className="h-4 w-4 mr-1" />
+                    View in document
+                  </Button>
                 )}
               </div>
-            )}
+              <p className="text-muted-foreground">{source.content}</p>
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+)}
+              
             
             {message.role === 'assistant' && onRegenerate && !isStreaming && (
               <div className="mt-2">
