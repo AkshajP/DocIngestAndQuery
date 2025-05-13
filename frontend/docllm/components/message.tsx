@@ -63,25 +63,25 @@ const PurePreviewMessage = ({
               <TooltipContent>Edit message</TooltipContent>
             </Tooltip>
           )}
-
-          <div
-            data-testid="message-content"
-            className={cn('flex flex-col gap-4', {
-              'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
-                message.role === 'user',
-            })}
-          >
-            <Markdown>{sanitizeText(part.text)}</Markdown>
-            
-            {/* Add streaming indicator */}
-            {isStreaming && message.role === 'assistant' && (
-              <div className="typing-indicator inline-flex items-center mt-1">
-                <span className="dot"></span>
-                <span className="dot"></span>
-                <span className="dot"></span>
-              </div>
-            )}
-          </div>
+  
+              <div
+              data-testid="message-content"
+              className={cn('flex flex-col gap-4', {
+                'bg-primary text-primary-foreground px-3 py-2 rounded-xl':
+                  message.role === 'user',
+              })}
+            >
+              <Markdown>{sanitizeText(part.text)}</Markdown>
+              
+              {/* Add streaming indicator */}
+              {isStreaming && message.role === 'assistant' && (
+                <div className="typing-indicator inline-flex items-center mt-1">
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                </div>
+              )}
+            </div>
         </div>
       );
     }
@@ -256,6 +256,7 @@ export const PreviewMessage = memo(
   PurePreviewMessage,
   (prevProps, nextProps) => {
     if (prevProps.isLoading !== nextProps.isLoading) return false;
+    if (prevProps.isStreaming !== nextProps.isStreaming) return false;
     if (prevProps.message.id !== nextProps.message.id) return false;
     if (prevProps.requiresScrollPadding !== nextProps.requiresScrollPadding)
       return false;

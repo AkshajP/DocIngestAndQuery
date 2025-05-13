@@ -17,17 +17,20 @@ import {
   CheckIcon, 
   XCircleIcon, 
   RefreshCwIcon,
-  FileTextIcon
+  FileTextIcon,
+  XIcon // Added for stop button
 } from 'lucide-react';
 import { Message } from '@/types/chat';
 
+// Add isStreaming prop to MessageItem
 interface MessageItemProps {
   message: Message;
   onRegenerate?: () => void;
   onViewSource?: (documentId: string) => void;
+  isStreaming?: boolean; // Add this prop
 }
 
-function MessageItem({ message, onRegenerate, onViewSource }: MessageItemProps) {
+function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: MessageItemProps) {
   const [showSources, setShowSources] = useState(false);
   
   return (
@@ -42,6 +45,15 @@ function MessageItem({ message, onRegenerate, onViewSource }: MessageItemProps) 
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {message.content}
               </ReactMarkdown>
+              
+              {/* Add streaming indicator */}
+              {isStreaming && message.role === 'assistant' && (
+                <div className="typing-indicator inline-flex items-center mt-1">
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                </div>
+              )}
             </div>
             
             {message.sources && message.sources.length > 0 && (
@@ -77,7 +89,7 @@ function MessageItem({ message, onRegenerate, onViewSource }: MessageItemProps) 
               </div>
             )}
             
-            {message.role === 'assistant' && onRegenerate && (
+            {message.role === 'assistant' && onRegenerate && !isStreaming && (
               <div className="mt-2">
                 <Button 
                   variant="outline" 
@@ -103,7 +115,7 @@ export default function ChatPage() {
     messages, 
     loadingMessages, 
     fetchChatMessages, 
-    sendMessage,
+    sendStreamingMessage,
     regenerateResponse,
     updateChatTitle,
     highlightDocumentSource
@@ -114,11 +126,14 @@ export default function ChatPage() {
   const [newTitle, setNewTitle] = useState('');
   const [inputValue, setInputValue] = useState('');
   const [sending, setSending] = useState(false);
+  const [streaming, setStreaming] = useState(false); // New state for streaming
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null); // Track which message is streaming
   const [loadingHighlight, setLoadingHighlight] = useState(false);
   const [highlightUrl, setHighlightUrl] = useState<string | null>(null);
   
   const titleInputRef = useRef<HTMLInputElement>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
+  const streamControlRef = useRef<{close: () => void} | null>(null); // Ref to control stream
 
   useEffect(() => {
     const fetchChatDetails = async () => {
@@ -171,13 +186,15 @@ export default function ChatPage() {
     setEditingTitle(false);
   };
 
+  // Modified to use streaming
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim()) return;
     
     setSending(true);
     try {
-      await sendMessage(chatId, inputValue);
+      // Use the streaming method instead
+      await sendStreamingMessage(chatId, inputValue);
       setInputValue('');
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -186,6 +203,17 @@ export default function ChatPage() {
         description: 'Failed to send message. Please try again.'
       });
     } finally {
+      setSending(false);
+    }
+  };
+
+  // Add a function to stop streaming
+  const handleStopStreaming = () => {
+    if (streamControlRef.current) {
+      streamControlRef.current.close();
+      streamControlRef.current = null;
+      setStreaming(false);
+      setStreamingMessageId(null);
       setSending(false);
     }
   };
@@ -265,11 +293,12 @@ export default function ChatPage() {
                 <MessageItem 
                   key={message.id}
                   message={message}
+                  isStreaming={streamingMessageId === message.id} // Pass streaming state
                   onRegenerate={message.role === 'assistant' ? () => handleRegenerate(message.id) : undefined}
                   onViewSource={(documentId) => handleViewSource(documentId, message.id)}
                 />
               ))}
-              {sending && (
+              {sending && !streaming && (
                 <div className="py-4 bg-muted/30">
                   <div className="max-w-3xl mx-auto px-4">
                     <div className="flex items-center">
@@ -301,8 +330,17 @@ export default function ChatPage() {
                 }
               }}
             />
-            <Button type="submit" disabled={sending || !inputValue.trim()}>
-              {sending ? (
+            <Button 
+              type={streaming ? "button" : "submit"} 
+              disabled={(!streaming && !inputValue.trim())}
+              onClick={streaming ? handleStopStreaming : undefined}
+            >
+              {streaming ? (
+                <>
+                  <XIcon className="mr-2 h-4 w-4" />
+                  Stop
+                </>
+              ) : sending ? (
                 <>
                   <LoaderIcon className="animate-spin mr-2 h-4 w-4" />
                   Sending...

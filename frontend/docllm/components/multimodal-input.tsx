@@ -24,7 +24,7 @@ import { SuggestedActions } from './suggested-actions';
 import equal from 'fast-deep-equal';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowDown } from 'lucide-react';
+import { ArrowDown, XIcon } from 'lucide-react';
 import { useScrollToBottom } from '@/hooks/use-scroll-to-bottom';
 import type { VisibilityType } from './visibility-selector';
 
@@ -41,6 +41,7 @@ function PureMultimodalInput({
   append,
   handleSubmit,
   className,
+  isStreaming,
   selectedVisibilityType,
 }: {
   chatId: string;
@@ -53,6 +54,7 @@ function PureMultimodalInput({
   messages: Array<UIMessage>;
   setMessages: UseChatHelpers['setMessages'];
   append: UseChatHelpers['append'];
+  isStreaming: boolean;
   handleSubmit: UseChatHelpers['handleSubmit'];
   className?: string;
   selectedVisibilityType: VisibilityType;
@@ -194,6 +196,7 @@ function PureMultimodalInput({
   }, [status, scrollToBottom]);
 
   return (
+    <div className="flex-1 relative">
     <div className="relative w-full flex flex-col gap-4">
       <AnimatePresence>
         {!isAtBottom && (
@@ -299,13 +302,26 @@ function PureMultimodalInput({
         {status === 'submitted' ? (
           <StopButton stop={stop} setMessages={setMessages} />
         ) : (
-          <SendButton
-            input={input}
-            submitForm={submitForm}
-            uploadQueue={uploadQueue}
-          />
+          <Button 
+        type="submit" 
+        disabled={isStreaming || !input.trim()}
+        onClick={isStreaming ? stop : undefined}
+      >
+        {isStreaming ? (
+          <>
+            <XIcon className="h-4 w-4 mr-2" />
+            Stop generating
+          </>
+        ) : (
+          <>
+            <ArrowUpIcon className="h-4 w-4 mr-2" />
+            Send
+          </>
+        )}
+      </Button>
         )}
       </div>
+    </div>
     </div>
   );
 }

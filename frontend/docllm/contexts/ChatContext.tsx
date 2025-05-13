@@ -30,8 +30,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [currentStreamedMessage, setCurrentStreamedMessage] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [streamController, setStreamController] = useState<{ close: () => void } | null>(null);
+
   const streamControlRef = useRef(null);
 
   const fetchChats = useCallback(async () => {
@@ -54,6 +55,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   
     try {
       setLoadingMessages(true);
+      console.log("line57,chatContext")
       
       // Try to get the chat details first to verify it exists
       try {
@@ -126,15 +128,18 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         created_at: new Date().toISOString(),
       };
       setMessages(prev => [...prev, tempMessage]);
-
+  
       const queryRequest: QueryRequest = {
         question,
         use_tree: false,
         top_k: 10,
       };
-
+  
+      // Make sure you're using the correct function here
       const response = await chatApi.submitQuery(chatId, queryRequest);
+      console.log("chatContext chatAPi res line 139->", response)
 
+  
       // Update messages with real message and response
       fetchChatMessages(chatId);
     } catch (error) {
@@ -146,6 +151,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchChatMessages]);
 
+  
   const updateChatTitle = useCallback(async (chatId: string, title: string) => {
     try {
       await chatApi.updateChat(chatId, { title });
@@ -216,114 +222,140 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const sendStreamingMessage = async (chatId, question) => {
-    // First add the user message to the UI immediately
-    const userMessageId = `user-${Date.now()}`;
-    const assistantMessageId = `assistant-${Date.now()}`;
+  const sendStreamingMessage = async (chatId: string, question: string) => {
+    if (!chatId || !question.trim()) return;
     
-    // Add user message to messages
-    const userMessage = {
-      id: userMessageId,
+    // Create temporary IDs for messages
+    const tempUserMsgId = `user-${Date.now()}`;
+    const tempAssistantMsgId = `assistant-${Date.now()}`;
+    
+    // Add user message to state
+    const userMessage: Message = {
+      id: tempUserMsgId,
       role: 'user',
       content: question,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
     };
     
-    // Create a placeholder for assistant message
-    const assistantMessage = {
-      id: assistantMessageId,
+    // Create placeholder for assistant message
+    const assistantMessage: Message = {
+      id: tempAssistantMsgId,
       role: 'assistant',
       content: '',
       created_at: new Date().toISOString(),
-      isStreaming: true
+      processing_stats: {
+        streaming: true
+      }
     };
     
-    // Update messages state with both messages
+    // Update messages with user message and empty assistant message
     setMessages(prev => [...prev, userMessage, assistantMessage]);
-    // setStreamingMessageId(assistantMessageId);
-    // Start streaming
-    setIsStreaming(true);
-    setCurrentStreamedMessage('');
+    setStreaming(true);
     
     try {
-      // Call our streaming API function
-      streamControlRef.current = chatApi.streamQuery(
+      const controller = await chatApi.streamQuery(
         chatId,
         question,
-        {}, // options
         {
-          onStart: (data) => {
-            console.log('Stream started', data);
-          },
-          onSources: (sources) => {
-            // Store sources to later attach to the complete message
-            setMessages(prev => prev.map(msg => 
-              msg.id === assistantMessageId 
-                ? { ...msg, sources } 
-                : msg
-            ));
-          },
           onToken: (token) => {
-            // Append token to current streamed message
-            setCurrentStreamedMessage(prev => prev + token);
-            
-            // Update the message in real-time
-            setMessages(prev => prev.map(msg => 
-              msg.id === assistantMessageId 
-                ? { ...msg, content: prev + token } 
-                : msg
-            ));
+            // Update assistant message with new token
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === tempAssistantMsgId 
+                  ? { ...msg, content: msg.content + token } 
+                  : msg
+              )
+            );
           },
+          
+          onSources: (sources) => {
+            // Add sources to the assistant message
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === tempAssistantMsgId 
+                  ? { ...msg, sources } 
+                  : msg
+              )
+            );
+          },
+          
           onComplete: (data) => {
-            // Update with final message and metadata
-            setMessages(prev => prev.map(msg => 
-              msg.id === assistantMessageId 
-                ? { 
-                    ...msg, 
-                    isStreaming: false,
-                    processing_stats: {
-                      time_taken: data.time_taken,
-                      tokens_used: data.token_count,
-                      // other stats
-                    }
-                  } 
-                : msg
-            ));
+            // Update assistant message with final stats
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === tempAssistantMsgId 
+                  ? { 
+                      ...msg, 
+                      processing_stats: {
+                        streaming: false,
+                        time_taken: data.time_taken,
+                        token_count: data.token_count
+                      }
+                    } 
+                  : msg
+              )
+            );
             
-            setIsStreaming(false);
-            streamControlRef.current = null;
+            setStreaming(false);
+            setStreamController(null);
+            
+            // Fetch the official messages from the server after completion
+            fetchChatMessages(chatId);
           },
+          
           onError: (error) => {
             console.error('Stream error:', error);
+            
+            // Remove the temporary messages
+            setMessages(prev => 
+              prev.filter(msg => 
+                msg.id !== tempUserMsgId && msg.id !== tempAssistantMsgId
+              )
+            );
+            
+            setStreaming(false);
+            setStreamController(null);
+            
+            // Show error toast
             toast({
               type: 'error',
               description: error.error || 'Error streaming response'
             });
-            
-            setIsStreaming(false);
-            streamControlRef.current = null;
           }
         }
       );
+      
+      setStreamController(controller);
     } catch (error) {
-      console.error('Failed to send streaming message:', error);
+      console.error('Failed to start streaming:', error);
+      
+      // Remove the temporary messages
+      setMessages(prev => 
+        prev.filter(msg => 
+          msg.id !== tempUserMsgId && msg.id !== tempAssistantMsgId
+        )
+      );
+      
+      setStreaming(false);
+      
+      // Show error toast
       toast({
         type: 'error',
         description: 'Failed to send message. Please try again.'
       });
-      setIsStreaming(false);
     }
   };
+  
   
   // Add a function to cancel streaming
   const cancelStreaming = () => {
-    if (streamControlRef.current) {
-      streamControlRef.current.close();
-      streamControlRef.current = null;
-      setIsStreaming(false);
+    if (streamController) {
+      streamController.close();
+      setStreamController(null);
+      setStreaming(false);
     }
   };
-  
+
 
   return (
     <ChatContext.Provider value={{

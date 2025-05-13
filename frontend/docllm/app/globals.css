@@ -163,19 +163,20 @@
 .prose pre code {
   white-space: pre;
 }
+
 .typing-indicator {
   display: inline-flex;
   align-items: center;
 }
 
 .typing-indicator .dot {
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
+  width: 6px;
+  height: 6px;
   background-color: currentColor;
-  margin: 0 1px;
-  animation: typing 1.4s infinite both;
+  border-radius: 50%;
+  margin: 0 2px;
+  opacity: 0.6;
+  animation: pulse 1.5s infinite;
 }
 
 .typing-indicator .dot:nth-child(2) {
@@ -186,17 +187,13 @@
   animation-delay: 0.4s;
 }
 
-@keyframes typing {
-  0%, 60%, 100% {
-    transform: translateY(0);
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scale(1);
   }
-  30% {
-    transform: translateY(-4px);
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
   }
-}
-
-/* Optional: style for messages that are currently streaming */
-[data-streaming="true"] .message-content {
-  border-left: 2px solid #3b82f6; /* Blue indicator for streaming */
-  padding-left: 0.5rem;
 }
