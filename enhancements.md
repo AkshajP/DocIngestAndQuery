@@ -5,13 +5,13 @@ to ensure the folder structure is seen else files will be under un-categorized.
 
 ## Future Enhancements
 
-- [ ] Check why sources are not showing up
 - [ ] Sidebar and DASH modal integration
 - [ ] Regenerated messages should be multi-view
-- [ ] Filter expressions for text and table content from vector db
 - [ ] Remove welcome message from backend
 - [ ] Add copy and feedback icons and api to frontend
-- [ ] ability to interact with doc processings - what failed
+- [x] Check why sources are not showing up
+- [x] ability to interact with doc processings - what failed
+- [x] Filter expressions for text and table content from vector db
 - [x] Emulate DASH using AG Grid 
     - [ ] Complexity - considering folder structure as an upload.-- ADD MANUALLY. 
     - [x] Deciding migration of `registry.json`
@@ -22,6 +22,14 @@ to ensure the folder structure is seen else files will be under un-categorized.
 - [x] ag grid interact
 - [x] doc process tracking
 - [ ] AI int for long context answer generation
+    1. i have already implemented a heirarchical chunking and indexing strategy,
+
+    2. a hybrid retrieval - (vector + keyword/sparse search like BM25) to catch both conceptual relevance and exact term matches. 
+        2.1 can re rank on a translated query
+
+    3. i have my own twist to query focused selection- each of my documents has a metadata, so i was thinking of having a smart document router which passes what to search in what document to bring back results.
+
+    4. I was thinking of including a smart token filler that dynamically adjusts the top_k parameter based on available prompt space, optimizing for more sources when chat history is small and reducing as it grows.
 
 embeddings generatED folder structure
 
@@ -33,13 +41,6 @@ embeddings generatED folder structure
 case user role documents
 
 ### errors:
-{"message_id": "msg_1864816287"}	
-15:56:58.473
-retrieval_complete	{"chunks_count": 5, "time": 0.18378996849060059}	
-15:56:58.761
-error	{"error": "'QueryEngine' object has no attribute 'stream_response'"}	
-15:56:58.761
-1
 
 
 

@@ -403,18 +403,27 @@ export default function AdminPage() {
                   </div>
                 ) : (
                   <>
-                    <label className="block mt-2">
-                      <input
-                        type="file"
-                        className="sr-only"
-                        onChange={(e) => {
-                          if (e.target.files && e.target.files[0]) {
-                            setUploadFile(e.target.files[0]);
-                          }
-                        }}
-                      />
-                      <Button className="mt-2">Select File</Button>
-                    </label>
+                    {/* Move the input outside of the label and add ref */}
+                    <input
+                      type="file"
+                      id="file-upload"
+                      className="hidden" // Change from sr-only to hidden
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          setUploadFile(e.target.files[0]);
+                        }
+                      }}
+                    />
+                    {/* Use standard button with direct click handler */}
+                    <Button 
+                      className="mt-2"
+                      onClick={() => {
+                        // Directly trigger the file input click
+                        document.getElementById('file-upload').click();
+                      }}
+                    >
+                      Select File
+                    </Button>
                     <p className="text-sm text-muted-foreground mt-2">
                       Supported formats: PDF, DOCX, TXT
                     </p>
@@ -425,7 +434,6 @@ export default function AdminPage() {
           </div>
         </CardContent>
       </Card>
-      
       {/* Documents List Section */}
       <Card>
         <CardHeader>

@@ -256,7 +256,7 @@ def extract_content_with_bbox(pdf_info_list: list, img_buket_path: str = ''):
 
 
 # --- Updated PDF Ingestion Function ---
-def ingest_pdf(pdf_file_path, lang='en', dump_intermediate=False):
+def ingest_pdf(pdf_file_path, lang='en', dump_intermediate=False, output_dir=None, storage_adapter=None):
     """
     Processes a PDF file using magic-pdf and returns extracted content
     with bounding boxes and associated images.
@@ -266,6 +266,8 @@ def ingest_pdf(pdf_file_path, lang='en', dump_intermediate=False):
         lang (str): Language hint for OCR ('en', 'zh', etc.). Defaults to 'en'.
         dump_intermediate (bool): If True, saves intermediate middle.json and .md files
                                     in the temporary directory. Defaults to False.
+        output_dir (str): Directory where to save extracted images. If None, images won't be saved.
+        storage_adapter: Optional storage adapter to use for saving files. If None, uses direct file I/O.
 
     Returns:
         dict: A dictionary containing:
@@ -354,7 +356,6 @@ def ingest_pdf(pdf_file_path, lang='en', dump_intermediate=False):
                 except Exception as e:
                     print(f"Warning: Failed to dump markdown - {e}")
 
-
             # --- Collect images ---
             # Images should have been written to local_image_dir by magic-pdf's image_writer
             for root, _, files in os.walk(local_image_dir):
@@ -381,26 +382,39 @@ def ingest_pdf(pdf_file_path, lang='en', dump_intermediate=False):
         # For safety, return None on major errors during processing
         return None
 
-    # --- Save images to the 'images' directory ---
-    if images:
-        output_image_dir = "images"
-        os.makedirs(output_image_dir, exist_ok=True)
-        for filename, image_data in images.items():
-            filepath = os.path.join(output_image_dir, filename)
-            try:
-                os.makedirs(os.path.dirname(filepath), exist_ok=True) # Ensure subdirectories exist
-                with open(filepath, 'wb') as f:
-                    f.write(image_data)
-                print(f"Saved image to: {filepath}")
-            except Exception as e:
-                print(f"Error saving image '{filename}': {e}")
+    # --- Save images to the specified output directory if provided ---
+    if images and output_dir:
+        try:
+            # Create the output directory if needed
+            if storage_adapter:
+                storage_adapter.create_directory(output_dir)
+            else:
+                os.makedirs(output_dir, exist_ok=True)
+                
+            for filename, image_data in images.items():
+                filepath = os.path.join(output_dir, filename)
+                try:
+                    # Use storage adapter if provided, otherwise use direct file I/O
+                    if storage_adapter:
+                        storage_adapter.write_file(image_data, filepath)
+                    else:
+                        # Create subdirectories if needed
+                        if not os.path.exists(os.path.dirname(filepath)):
+                            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+                        # Write the image file
+                        with open(filepath, 'wb') as f:
+                            f.write(image_data)
+                    print(f"Saved image to: {filepath}")
+                except Exception as e:
+                    print(f"Error saving image '{filename}': {e}")
+        except Exception as e:
+            print(f"Error creating output directory '{output_dir}': {e}")
 
     # --- Return the final structure ---
     return {
         "content_list": content_list_with_bbox,  
         "images": images
     }
-
 # --- Example Usage ---
 if __name__ == "__main__":
     # pdf_path = "output10.pdf"  # Replace with your PDF path
