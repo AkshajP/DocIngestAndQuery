@@ -32,9 +32,19 @@ class QueryRequest(BaseModel):
     """Request to submit a query"""
     question: str
     use_tree: Optional[bool] = False
+    use_hybrid: Optional[bool] = None  # New parameter - None means auto-detect
+    vector_weight: Optional[float] = Field(0.5, ge=0.0, le=1.0)  # New parameter
     top_k: Optional[int] = Field(5, ge=1, le=20)
     tree_level_filter: Optional[List[int]] = None  # Filter by tree level
     model_override: Optional[str] = None  # Override default model
+    
+    @field_validator('vector_weight')
+    @classmethod
+    def validate_vector_weight(cls, v):
+        """Validate vector weight is between 0 and 1"""
+        if v is not None and (v < 0.0 or v > 1.0):
+            raise ValueError('vector_weight must be between 0.0 and 1.0')
+        return v
     
     @field_validator('top_k')
     @classmethod

@@ -502,8 +502,8 @@ class MilvusClient:
         try:
             # Determine if we can and should use hybrid search
             can_use_hybrid = self.hybrid_search_enabled and self.supports_hybrid_search()
-            should_use_hybrid = use_hybrid and can_use_hybrid and query_text
-            
+            should_use_hybrid = bool(use_hybrid and can_use_hybrid and query_text)
+            logger.debug(f"should use hybrid:{should_use_hybrid}, query text:{query_text}")
             if use_hybrid and not can_use_hybrid:
                 logger.warning("Hybrid search requested but not supported by collection. Falling back to vector search.")
                 
@@ -594,7 +594,7 @@ class MilvusClient:
         query_embedding: List[float],
         query_text: str,
         search_params: VectorSearchParams,
-        vector_weight: float = 0.5
+        vector_weight: float = 0.3,
     ) -> List[VectorSearchResult]:
         """
         Perform hybrid search combining vector similarity with BM25 text matching.
@@ -615,7 +615,7 @@ class MilvusClient:
             
             # 1. First, execute vector search
             logger.info(f"Executing vector search with embedding dimension {len(query_embedding)}")
-            vector_results = self.search(search_params)
+            vector_results = self.search(search_params, use_hybrid=False)
             
             # 2. Prepare BM25 search parameters
             vector_field = self.schema.vector_field.name
