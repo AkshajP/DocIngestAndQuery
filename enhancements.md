@@ -45,6 +45,20 @@ case user role documents
 
 
 
+Comparison & Recommendations:
+If precision and the quality of top-ranked documents matter: Reciprocal Rank Fusion (RRF) is a good option as it emphasizes documents that appear at the top of either search system.
+
+If the goal is to maximize the number of relevant documents: CombSUM and CombMNZ are solid choices, with CombSUM ensuring broad relevance, and CombMNZ focusing on non-zero matches.
+
+If you want to prioritize the best documents: CombMAX ensures that only the best results from each search method are considered, which is great if the systems are generally reliable but may have some inconsistencies in ranking.
+
+If the systems' score ranges differ: Logarithmic Scaling before Combination is useful to normalize and avoid bias towards one method.
+
+If you have strong confidence in one method: Weighted Ranking lets you give more importance to one of the search methods, allowing you to tune the balance.
+
+Final Choice:
+The optimal method will depend on the specific nature of your dataset, the retrieval systems, and the type of queries you are handling. A balanced, flexible approach like Weighted Ranking or RRF will usually be the best starting point, with CombSUM or CombMAX as possible alternatives for simpler, more direct combinations.
+
 
 Document Selection with AG Grid: Summary & Plan
 
