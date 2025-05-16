@@ -4,12 +4,14 @@
 import { useEffect, useState } from 'react';
 import { adminApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import DocumentViewerModal from '@/components/admin/DocumentViewerModal';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from '@/components/toast';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Eye } from 'lucide-react';
 
 export default function AdminPage() {
   const [stats, setStats] = useState<any>(null);
@@ -22,6 +24,13 @@ export default function AdminPage() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<any>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
+const [selectedDocumentForViewer, setSelectedDocumentForViewer] = useState<any>(null);
+
+const handleOpenViewer = (doc: any) => {
+  setSelectedDocumentForViewer(doc);
+  setViewerOpen(true);
+};
 
   useEffect(() => {
     fetchStats();
@@ -595,6 +604,15 @@ export default function AdminPage() {
                                 )}
                               </Button>
                             )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="ml-2"
+                              onClick={() => handleOpenViewer(doc)}
+                            >
+                              <Eye className="h-3 w-3 mr-1" />
+                              View Chunks
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -606,6 +624,14 @@ export default function AdminPage() {
           </Tabs>
         </CardContent>
       </Card>
+      {selectedDocumentForViewer && (
+                              <DocumentViewerModal
+                                isOpen={viewerOpen}
+                                onClose={() => setViewerOpen(false)}
+                                documentId={selectedDocumentForViewer.document_id}
+                                documentName={selectedDocumentForViewer.original_filename || 'Unnamed Document'}
+                              />
+                            )}
     </div>
   );
 }

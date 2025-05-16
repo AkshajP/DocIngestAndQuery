@@ -17,6 +17,11 @@ interface PDFPageViewerProps {
   bbox?: number[];
   zoom?: number;
   onLoaded?: (pageCount: number) => void;
+  // Add this new prop
+  allBoundingBoxes?: Array<{
+    bbox: number[];
+    isActive: boolean;
+  }>;
 }
 
 export default function PDFPageViewer({
@@ -24,7 +29,8 @@ export default function PDFPageViewer({
   pageNumber,
   bbox,
   zoom = 1.0,
-  onLoaded
+  onLoaded,
+  allBoundingBoxes = []
 }: PDFPageViewerProps) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState<PDFPageProxy | null>(null);
@@ -150,128 +156,147 @@ export default function PDFPageViewer({
   }, [zoom]);
 
   const renderPage = async (pdfPage: PDFPageProxy, scale: number) => {
-    if (!canvasRef.current) return;
-  
-    try {
-      const canvas = canvasRef.current;
-      const context = canvas.getContext('2d');
-  
-      if (!context) {
-        throw new Error('Canvas context is null');
-      }
-  
-      // Cancel any ongoing rendering
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-        renderTaskRef.current = null;
-      }
-  
-      // Calculate viewport with zoom
-      const viewport = pdfPage.getViewport({ scale: scale });
-  
-      // Set canvas dimensions
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-  
-      // Update container size
-      if (containerRef.current) {
-        containerRef.current.style.width = `${viewport.width}px`;
-        containerRef.current.style.height = `${viewport.height}px`;
-      }
-  
-      // Render the page and store the rendering task
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport
-      };
-  
-      renderTaskRef.current = pdfPage.render(renderContext);
-      
-      try {
-        // Wait for rendering to complete
-        await renderTaskRef.current.promise;
-      } catch (err) {
-        // Specifically check for rendering cancelled exception
-        if (err instanceof Error && 
-            (err.message === 'Rendering cancelled' || 
-             err.name === 'RenderingCancelledException')) {
-          console.log('Render cancelled, this is normal during page navigation');
-          return; // Exit early without error
-        }
-        // Rethrow other errors
-        throw err;
-      }
-      
+  if (!canvasRef.current) return;
+
+  try {
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    if (!context) {
+      throw new Error('Canvas context is null');
+    }
+
+    // Cancel any ongoing rendering
+    if (renderTaskRef.current) {
+      renderTaskRef.current.cancel();
       renderTaskRef.current = null;
-  
-      // Render annotations if bbox is provided
-      if (bbox && bbox.length === 4) {
-        renderAnnotation(bbox, viewport);
-      }
-    } catch (err: any) {
-      // Skip rendering cancelled errors
+    }
+
+    // Calculate viewport with zoom
+    const viewport = pdfPage.getViewport({ scale: scale });
+
+    // Set canvas dimensions
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    // Update container size
+    if (containerRef.current) {
+      containerRef.current.style.width = `${viewport.width}px`;
+      containerRef.current.style.height = `${viewport.height}px`;
+    }
+
+    // Render the page and store the rendering task
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+
+    renderTaskRef.current = pdfPage.render(renderContext);
+    
+    try {
+      // Wait for rendering to complete
+      await renderTaskRef.current.promise;
+    } catch (err) {
+      // Specifically check for rendering cancelled exception
       if (err instanceof Error && 
           (err.message === 'Rendering cancelled' || 
            err.name === 'RenderingCancelledException')) {
-        return;
+        console.log('Render cancelled, this is normal during page navigation');
+        return; // Exit early without error
       }
-      
-      console.error('Error rendering page:', err);
-      setError(err?.message || 'Failed to render page');
+      // Rethrow other errors
+      throw err;
     }
-  };
-
-  // Render annotations
-  const renderAnnotation = (bboxCoords: number[], viewport: any) => {
-    if (!annotationLayerRef.current) return;
+    
+    renderTaskRef.current = null;
 
     // Clear previous annotations
-    annotationLayerRef.current.innerHTML = '';
-
-    // Create highlight element
-    const highlight = document.createElement('div');
-    highlight.className = 'pdf-annotation';
-    highlight.style.position = 'absolute';
-    highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
-    highlight.style.border = '2px solid rgba(255, 204, 0, 0.7)';
-    highlight.style.borderRadius = '3px';
-    
-    // Extract coordinates
-    const [x1, y1, x2, y2] = bboxCoords;
-    
-    // Scale coordinates based on viewport scale
-    const scaledX1 = x1 * viewport.scale;
-    const scaledY1 = y1 * viewport.scale;
-    const scaledX2 = x2 * viewport.scale;
-    const scaledY2 = y2 * viewport.scale;
-    
-    // Position the highlight
-    highlight.style.left = `${scaledX1}px`;
-    highlight.style.top = `${scaledY1}px`;
-    highlight.style.width = `${scaledX2 - scaledX1}px`;
-    highlight.style.height = `${scaledY2 - scaledY1}px`;
-    
-    // Add to annotation layer
-    annotationLayerRef.current.appendChild(highlight);
-    
-    // Add pulsing effect to make the annotation more noticeable
-    highlight.style.animation = 'pulse-highlight 2s infinite';
-    
-    // Add the animation style if it doesn't exist
-    if (!document.getElementById('highlight-animation')) {
-      const style = document.createElement('style');
-      style.id = 'highlight-animation';
-      style.textContent = `
-        @keyframes pulse-highlight {
-          0% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0.7); }
-          70% { box-shadow: 0 0 0 10px rgba(255, 204, 0, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0); }
-        }
-      `;
-      document.head.appendChild(style);
+    if (annotationLayerRef.current) {
+      annotationLayerRef.current.innerHTML = '';
+      
+      // Render the main bbox if provided (for backward compatibility)
+      if (bbox && bbox.length === 4) {
+        renderAnnotation(bbox, viewport, true);
+      }
+      
+      // Render all additional bounding boxes if provided
+      if (allBoundingBoxes && allBoundingBoxes.length > 0) {
+        allBoundingBoxes.forEach(({ bbox, isActive }) => {
+          if (bbox && bbox.length === 4) {
+            renderAnnotation(bbox, viewport, isActive);
+          }
+        });
+      }
+    }
+  } catch (err: any) {
+    // Skip rendering cancelled errors
+    if (err instanceof Error && 
+        (err.message === 'Rendering cancelled' || 
+         err.name === 'RenderingCancelledException')) {
+      return;
     }
     
-    // Scroll to the annotation
+    console.error('Error rendering page:', err);
+    setError(err?.message || 'Failed to render page');
+  }
+};
+
+  // Render annotations
+  const renderAnnotation = (bboxCoords: number[], viewport: any, isActive: boolean = true) => {
+  if (!annotationLayerRef.current) return;
+
+  // Create highlight element
+  const highlight = document.createElement('div');
+  highlight.className = 'pdf-annotation';
+  highlight.style.position = 'absolute';
+  
+  // Style based on whether this is the active highlight
+  if (isActive) {
+    highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+    highlight.style.border = '2px solid rgba(255, 204, 0, 0.7)';
+    // Add animation only for active highlight
+    highlight.style.animation = 'pulse-highlight 2s infinite';
+  } else {
+    highlight.style.backgroundColor = 'rgba(173, 216, 230, 0.2)';
+    highlight.style.border = '1px solid rgba(100, 149, 237, 0.5)';
+  }
+  
+  highlight.style.borderRadius = '3px';
+  
+  // Extract coordinates
+  const [x1, y1, x2, y2] = bboxCoords;
+  
+  // Scale coordinates based on viewport scale
+  const scaledX1 = x1 * viewport.scale;
+  const scaledY1 = y1 * viewport.scale;
+  const scaledX2 = x2 * viewport.scale;
+  const scaledY2 = y2 * viewport.scale;
+  
+  // Position the highlight
+  highlight.style.left = `${scaledX1}px`;
+  highlight.style.top = `${scaledY1}px`;
+  highlight.style.width = `${scaledX2 - scaledX1}px`;
+  highlight.style.height = `${scaledY2 - scaledY1}px`;
+  
+  // Add to annotation layer
+  annotationLayerRef.current.appendChild(highlight);
+  
+  // Add the animation style if it doesn't exist and this is the active highlight
+  if (isActive && !document.getElementById('highlight-animation')) {
+    const style = document.createElement('style');
+    style.id = 'highlight-animation';
+    style.textContent = `
+      @keyframes pulse-highlight {
+        0% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(255, 204, 0, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+  
+  // Scroll to the annotation if it's the active one
+  if (isActive) {
     setTimeout(() => {
       if (containerRef.current) {
         // Calculate center of the annotation
@@ -286,7 +311,8 @@ export default function PDFPageViewer({
         });
       }
     }, 100);
-  };
+  }
+};
 
   return (
     <div className="flex flex-col items-center w-full h-full">

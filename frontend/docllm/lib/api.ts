@@ -296,5 +296,23 @@ import {
       return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/retry`, {
         method: "POST",
       });
+    },
+    getDocumentChunks: async (documentId: string, options?: { 
+      chunkType?: string, 
+      pageNumber?: number 
+    }): Promise<any> => {
+      const queryParams = new URLSearchParams();
+      
+      if (options?.chunkType) {
+        queryParams.append("chunk_type", options.chunkType);
+      }
+      
+      if (options?.pageNumber !== undefined) {
+        queryParams.append("page_number", options.pageNumber.toString());
+      }
+      
+      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
+      
+      return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/chunks${queryString}`);
     }
   };
