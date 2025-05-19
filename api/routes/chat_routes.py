@@ -339,8 +339,7 @@ async def submit_query(
     user_id: str = Depends(get_current_user),
     case_id: str = Depends(get_current_case)
 ):
-    """
-    Submit a query in a chat with optional streaming.
+    """Submit a query in a chat with optional streaming.
     
     When stream=True, the response is streamed as Server-Sent Events with the following event types:
     - start: Initial event with message_id
@@ -448,6 +447,8 @@ async def submit_query(
             chat_id=chat_id,
             user_id=user_id,
             use_tree=request.use_tree if request.use_tree is not None else False,
+            use_hybrid=request.use_hybrid,  # Pass hybrid search parameter
+            vector_weight=request.vector_weight,  # Pass vector weight
             top_k=request.top_k if request.top_k is not None else 10,
             chat_history=chat_history,
             model_override=request.model_override,
@@ -613,7 +614,7 @@ async def _stream_query_response(
     query_service, chat_service, history_service,
     question, chat_id, user_id, case_id, document_ids,
     use_tree, top_k, chat_history, model_preference,
-    message_id, tree_level_filter
+    message_id, tree_level_filter, use_hybrid=True, vector_weight=0.4
 ) -> AsyncGenerator[str, None]:
     """Stream the query response"""
     # Start query processing
@@ -632,11 +633,15 @@ async def _stream_query_response(
     # Get document chunks
     chunks = await asyncio.to_thread(
         query_service.retrieve_relevant_chunks,
-        query_embedding=query_embedding,  # Use correct parameter name and embedding vector
+        query_embedding=query_embedding,
+        query_text=question,  # Pass query text for BM25
         case_id=case_id, 
         document_ids=document_ids,
         use_tree=use_tree,
-        top_k=top_k
+        use_hybrid=use_hybrid,  # Pass hybrid search parameter
+        vector_weight=vector_weight,  # Pass vector weight
+        top_k=top_k,
+        tree_level_filter=tree_level_filter
     )
     
     retrieval_time = time.time() - retrieval_start

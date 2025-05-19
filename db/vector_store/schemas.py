@@ -23,7 +23,17 @@ class ScalarField(BaseModel):
     is_primary: bool = False
     max_length: Optional[int] = None  # For VARCHAR type
     description: Optional[str] = None
+    enable_analyzer: bool = False  # Add this field for text analysis
+    enable_match: bool = False 
 
+class SparseField(BaseModel):
+    """Definition of a sparse vector field for BM25 search in Milvus"""
+    name: str
+    index_type: str = "SPARSE_INVERTED_INDEX"  # Default to sparse inverted index
+    metric_type: str = "BM25"  # Default to BM25 for text search
+    params: Dict[str, Any] = Field(
+        default_factory=lambda: {"k1": 1.5, "b": 0.75}  # Default BM25 parameters
+    )
 
 class PartitionConfig(BaseModel):
     """Configuration for Milvus partitioning"""
@@ -43,17 +53,27 @@ class PartitionConfig(BaseModel):
         else:
             return "default"
 
+class BM25Function(BaseModel):
+    """Configuration for BM25 function in Milvus"""
+    input_field: str = "content"  # Field containing text
+    output_field: str = "sparse"  # Field to store sparse vectors
+    params: Dict[str, Any] = Field(
+        default_factory=lambda: {"k1": 1.5, "b": 0.75}
+    )
+
 class CollectionSchema(BaseModel):
     """Schema definition for a Milvus collection"""
     name: str
     description: Optional[str] = None
     scalar_fields: List[ScalarField]
     vector_field: VectorField
+    sparse_field: Optional[SparseField] = None  # Add optional sparse field
+    bm25_function: Optional[BM25Function] = None 
     partition_config: PartitionConfig
     
     @classmethod
     def default_document_schema(cls, collection_name: str = "document_store", dimension: int = 3072) -> "CollectionSchema":
-        """Create a default schema for document storage"""
+        """Create a default schema for document storage with BM25 support"""
         scalar_fields = [
             ScalarField(name="id", field_type="VARCHAR", is_primary=True, max_length=100, 
                     description="Unique entity identifier"),
@@ -64,7 +84,8 @@ class CollectionSchema(BaseModel):
             ScalarField(name="chunk_id", field_type="VARCHAR", max_length=100, 
                     description="Chunk identifier within document"),
             ScalarField(name="content", field_type="VARCHAR", max_length=65535, 
-                    description="Text content of the chunk"),
+                    description="Text content of the chunk",
+                    enable_analyzer=True, enable_match=True),  # Enable analyzer and match for BM25
             ScalarField(name="content_type", field_type="VARCHAR", max_length=50, 
                     description="Type of content (text, table, image, etc.)"),
             ScalarField(name="chunk_type", field_type="VARCHAR", max_length=50, 
@@ -82,6 +103,15 @@ class CollectionSchema(BaseModel):
             dimension=dimension
         )
         
+        sparse_field = SparseField(
+            name="sparse"
+        )
+        
+        bm25_function = BM25Function(
+            input_field="content",
+            output_field="sparse"
+        )
+        
         partition_config = PartitionConfig(
             strategy="case_id",
             field="case_id"
@@ -89,11 +119,14 @@ class CollectionSchema(BaseModel):
         
         return cls(
             name=collection_name,
-            description="Document store with enhanced schema for easier filtering",
+            description="Document store with enhanced schema for vector and BM25 search",
             scalar_fields=scalar_fields,
             vector_field=vector_field,
+            sparse_field=sparse_field,
+            bm25_function=bm25_function,
             partition_config=partition_config
         )
+
 
 
 class VectorEntity(BaseModel):
@@ -104,6 +137,7 @@ class VectorEntity(BaseModel):
     chunk_id: str
     content: str
     embedding: List[float]
+    sparse_vector: Optional[Any] = None  # Add field for sparse vector (BM25)
     content_type: str = "text"  # "text", "table", "image", etc.
     chunk_type: str = "original"  # "original", "summary", etc.
     page_number: Optional[int] = None
@@ -123,7 +157,8 @@ class VectorEntity(BaseModel):
             "page_number": self.page_number,
             "tree_level": self.tree_level,
             "metadata": self.metadata,
-            "embedding": self.embedding
+            "embedding": self.embedding,
+            # We don't need to include sparse_vector as it will be generated automatically by Milvus
         }
     
     @classmethod

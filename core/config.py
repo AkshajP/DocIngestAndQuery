@@ -7,14 +7,17 @@ from pydantic import BaseModel, Field, validator, model_validator
 logger = logging.getLogger(__name__)
 
 class VectorDBConfig(BaseModel):
-    """Configuration for vector database"""
     host: str = "localhost"
     port: str = "19530"
     username: Optional[str] = None
     password: Optional[str] = None
     collection_name: str = "document_store"
-    dimension: int = 3072  # Default embedding dimension
-    partition_strategy: str = "document_id"  # How to partition data
+    dimension: int = 3072
+    
+    # Hybrid search settings
+    enable_hybrid_search: bool = True
+    default_vector_weight: float = 0.65  # Slightly favor vector search by default
+    fusion_method: str = "weighted"
 
 
 class OllamaConfig(BaseModel):

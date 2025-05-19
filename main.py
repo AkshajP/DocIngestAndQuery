@@ -7,7 +7,8 @@ from api.routes import document_routes, admin_routes, chat_routes
 
 # Create the main FastAPI application instance
 app = FastAPI()
-
+import logging 
+logging.getLogger().setLevel(logging.DEBUG)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],  # Your Next.js app

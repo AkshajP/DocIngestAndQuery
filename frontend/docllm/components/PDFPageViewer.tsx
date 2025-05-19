@@ -17,6 +17,12 @@ interface PDFPageViewerProps {
   bbox?: number[];
   zoom?: number;
   onLoaded?: (pageCount: number) => void;
+  // Add this new prop
+   allBoundingBoxes?: Array<{
+    bbox: number[];
+    isActive: boolean;
+    color?: string; // Add color property
+  }>;
 }
 
 export default function PDFPageViewer({
@@ -24,8 +30,10 @@ export default function PDFPageViewer({
   pageNumber,
   bbox,
   zoom = 1.0,
-  onLoaded
+  onLoaded,
+  allBoundingBoxes = []
 }: PDFPageViewerProps) {
+  console.log(documentId,pageNumber,allBoundingBoxes);
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState<PDFPageProxy | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +87,8 @@ export default function PDFPageViewer({
       isActive = false;
     };
   }, [documentId, onLoaded]);
+
+
 
   // Handle page changes
   useEffect(() => {
@@ -142,136 +152,195 @@ export default function PDFPageViewer({
     };
   }, [pdf, pageNumber]);
 
-  // Re-render when zoom changes
-  useEffect(() => {
-    if (page) {
-      renderPage(page, zoom);
-    }
-  }, [zoom]);
+useEffect(() => {
+  if (page) {
+    renderPage(page, zoom);
+  }
+}, [zoom, allBoundingBoxes, page]);
+
 
   const renderPage = async (pdfPage: PDFPageProxy, scale: number) => {
-    if (!canvasRef.current) return;
-  
-    try {
-      const canvas = canvasRef.current;
-      const context = canvas.getContext('2d');
-  
-      if (!context) {
-        throw new Error('Canvas context is null');
-      }
-  
-      // Cancel any ongoing rendering
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-        renderTaskRef.current = null;
-      }
-  
-      // Calculate viewport with zoom
-      const viewport = pdfPage.getViewport({ scale: scale });
-  
-      // Set canvas dimensions
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-  
-      // Update container size
-      if (containerRef.current) {
-        containerRef.current.style.width = `${viewport.width}px`;
-        containerRef.current.style.height = `${viewport.height}px`;
-      }
-  
-      // Render the page and store the rendering task
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport
-      };
-  
-      renderTaskRef.current = pdfPage.render(renderContext);
-      
-      try {
-        // Wait for rendering to complete
-        await renderTaskRef.current.promise;
-      } catch (err) {
-        // Specifically check for rendering cancelled exception
-        if (err instanceof Error && 
-            (err.message === 'Rendering cancelled' || 
-             err.name === 'RenderingCancelledException')) {
-          console.log('Render cancelled, this is normal during page navigation');
-          return; // Exit early without error
-        }
-        // Rethrow other errors
-        throw err;
-      }
-      
+  if (!canvasRef.current) return;
+
+  try {
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    if (!context) {
+      throw new Error('Canvas context is null');
+    }
+
+    // Cancel any ongoing rendering
+    if (renderTaskRef.current) {
+      renderTaskRef.current.cancel();
       renderTaskRef.current = null;
-  
-      // Render annotations if bbox is provided
-      if (bbox && bbox.length === 4) {
-        renderAnnotation(bbox, viewport);
-      }
-    } catch (err: any) {
-      // Skip rendering cancelled errors
+    }
+
+    // Calculate viewport with zoom
+    const viewport = pdfPage.getViewport({ scale: scale });
+
+    // Set canvas dimensions
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    // Update container size
+    if (containerRef.current) {
+      containerRef.current.style.width = `${viewport.width}px`;
+      containerRef.current.style.height = `${viewport.height}px`;
+    }
+
+    // Render the page and store the rendering task
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+
+    renderTaskRef.current = pdfPage.render(renderContext);
+    
+    try {
+      // Wait for rendering to complete
+      await renderTaskRef.current.promise;
+      
+      // IMPORTANT: Only render annotations after page rendering is complete
+      renderAnnotations(viewport);
+      
+    } catch (err) {
       if (err instanceof Error && 
           (err.message === 'Rendering cancelled' || 
            err.name === 'RenderingCancelledException')) {
+        console.log('Render cancelled, this is normal during page navigation');
         return;
       }
-      
-      console.error('Error rendering page:', err);
-      setError(err?.message || 'Failed to render page');
+      throw err;
     }
-  };
+    
+    renderTaskRef.current = null;
+
+  } catch (err: any) {
+    if (err instanceof Error && 
+        (err.message === 'Rendering cancelled' || 
+         err.name === 'RenderingCancelledException')) {
+      return;
+    }
+    
+    console.error('Error rendering page:', err);
+    setError(err?.message || 'Failed to render page');
+  }
+};
+
+// Move annotation rendering to a separate function for clarity
+const renderAnnotations = (viewport: any) => {
+  console.log("Rendering annotations with viewport:", viewport);
+  
+  // Clear previous annotations
+  if (annotationLayerRef.current) {
+    annotationLayerRef.current.innerHTML = '';
+    console.log("Cleared previous annotations");
+    
+    // Render the main bbox if provided (for backward compatibility)
+    if (bbox && bbox.length === 4) {
+      console.log("Rendering main bbox:", bbox);
+      renderAnnotation(bbox, viewport, true);
+    }
+    
+    // Render all additional bounding boxes if provided
+    if (allBoundingBoxes && allBoundingBoxes.length > 0) {
+      console.log(`Rendering ${allBoundingBoxes.length} bounding boxes`);
+      allBoundingBoxes.forEach((boxInfo, index) => {
+        if (boxInfo.bbox && boxInfo.bbox.length === 4) {
+          console.log(`Rendering box ${index}:`, boxInfo);
+          renderAnnotation(
+            boxInfo.bbox, 
+            viewport, 
+            boxInfo.isActive,
+            boxInfo.color
+          );
+        } else {
+          console.warn(`Invalid bbox at index ${index}:`, boxInfo.bbox);
+        }
+      });
+    } else {
+      console.log("No additional bounding boxes to render");
+    }
+  } else {
+    console.warn("annotationLayerRef is not available");
+  }
+};
 
   // Render annotations
-  const renderAnnotation = (bboxCoords: number[], viewport: any) => {
-    if (!annotationLayerRef.current) return;
+  const renderAnnotation = (bboxCoords: number[], viewport: any, isActive: boolean = true, color?: string) => {
+  if (!annotationLayerRef.current) {
+    console.warn("Cannot render annotation: annotationLayerRef is null");
+    return;
+  }
 
-    // Clear previous annotations
-    annotationLayerRef.current.innerHTML = '';
+  console.log(`Rendering annotation: bbox=${bboxCoords}, isActive=${isActive}, color=${color}`);
 
-    // Create highlight element
-    const highlight = document.createElement('div');
-    highlight.className = 'pdf-annotation';
-    highlight.style.position = 'absolute';
-    highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
-    highlight.style.border = '2px solid rgba(255, 204, 0, 0.7)';
-    highlight.style.borderRadius = '3px';
+  // Create highlight element
+  const highlight = document.createElement('div');
+  highlight.className = 'pdf-annotation';
+  highlight.style.position = 'absolute';
+  highlight.style.pointerEvents = 'none'; // Make sure it doesn't interfere with clicks
+  
+  // Use the provided color or fall back to default colors
+  if (color) {
+    // Make color more visible by ensuring proper opacity
+    highlight.style.backgroundColor = `${color}33`; // 20% opacity
+    highlight.style.border = `2px solid ${color}`;
     
-    // Extract coordinates
-    const [x1, y1, x2, y2] = bboxCoords;
-    
-    // Scale coordinates based on viewport scale
-    const scaledX1 = x1 * viewport.scale;
-    const scaledY1 = y1 * viewport.scale;
-    const scaledX2 = x2 * viewport.scale;
-    const scaledY2 = y2 * viewport.scale;
-    
-    // Position the highlight
-    highlight.style.left = `${scaledX1}px`;
-    highlight.style.top = `${scaledY1}px`;
-    highlight.style.width = `${scaledX2 - scaledX1}px`;
-    highlight.style.height = `${scaledY2 - scaledY1}px`;
-    
-    // Add to annotation layer
-    annotationLayerRef.current.appendChild(highlight);
-    
-    // Add pulsing effect to make the annotation more noticeable
-    highlight.style.animation = 'pulse-highlight 2s infinite';
-    
-    // Add the animation style if it doesn't exist
-    if (!document.getElementById('highlight-animation')) {
-      const style = document.createElement('style');
-      style.id = 'highlight-animation';
-      style.textContent = `
-        @keyframes pulse-highlight {
-          0% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0.7); }
-          70% { box-shadow: 0 0 0 10px rgba(255, 204, 0, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0); }
-        }
-      `;
-      document.head.appendChild(style);
+    // Add data attributes for debugging
+    highlight.setAttribute('data-color', color);
+  } else {
+    // Original styling as fallback
+    if (isActive) {
+      highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+      highlight.style.border = '2px solid rgba(255, 204, 0, 0.7)';
+      highlight.style.animation = 'pulse-highlight 2s infinite';
+    } else {
+      highlight.style.backgroundColor = 'rgba(173, 216, 230, 0.2)';
+      highlight.style.border = '1px solid rgba(100, 149, 237, 0.5)';
     }
-    
-    // Scroll to the annotation
+  }
+  
+  highlight.style.borderRadius = '3px';
+  highlight.style.zIndex = '100'; // Ensure it's above the PDF content
+  
+  // Extract coordinates
+  const [x1, y1, x2, y2] = bboxCoords;
+  
+  // Validate bbox - coordinates should be numbers and form a valid rectangle
+  if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
+    console.warn("Invalid bbox coordinates, contains NaN:", bboxCoords);
+    return;
+  }
+  
+  if (x2 <= x1 || y2 <= y1) {
+    console.warn("Invalid bbox dimensions:", bboxCoords);
+    return;
+  }
+  
+  // Scale coordinates based on viewport scale
+  const scaledX1 = x1 * viewport.scale;
+  const scaledY1 = y1 * viewport.scale;
+  const scaledX2 = x2 * viewport.scale;
+  const scaledY2 = y2 * viewport.scale;
+  
+  // Position the highlight
+  highlight.style.left = `${scaledX1}px`;
+  highlight.style.top = `${scaledY1}px`;
+  highlight.style.width = `${scaledX2 - scaledX1}px`;
+  highlight.style.height = `${scaledY2 - scaledY1}px`;
+  
+  // Add data attributes for easier debugging
+  highlight.setAttribute('data-bbox', JSON.stringify(bboxCoords));
+  highlight.setAttribute('data-scaled-bbox', JSON.stringify([scaledX1, scaledY1, scaledX2, scaledY2]));
+  
+  // Add to annotation layer
+  annotationLayerRef.current.appendChild(highlight);
+  console.log("Annotation added to layer");
+  
+  // Scroll to the active annotation
+  if (isActive) {
     setTimeout(() => {
       if (containerRef.current) {
         // Calculate center of the annotation
@@ -286,8 +355,8 @@ export default function PDFPageViewer({
         });
       }
     }, 100);
-  };
-
+  }
+};
   return (
     <div className="flex flex-col items-center w-full h-full">
       <div 

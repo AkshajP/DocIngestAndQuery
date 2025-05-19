@@ -4,12 +4,14 @@
 import { useEffect, useState } from 'react';
 import { adminApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import DocumentViewerModal from '@/components/admin/DocumentViewerModal';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from '@/components/toast';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Eye } from 'lucide-react';
 
 export default function AdminPage() {
   const [stats, setStats] = useState<any>(null);
@@ -22,6 +24,13 @@ export default function AdminPage() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<any>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
+const [selectedDocumentForViewer, setSelectedDocumentForViewer] = useState<any>(null);
+
+const handleOpenViewer = (doc: any) => {
+  setSelectedDocumentForViewer(doc);
+  setViewerOpen(true);
+};
 
   useEffect(() => {
     fetchStats();
@@ -419,13 +428,13 @@ export default function AdminPage() {
                       className="mt-2"
                       onClick={() => {
                         // Directly trigger the file input click
-                        document.getElementById('file-upload').click();
+                        document.getElementById('file-upload')?.click();
                       }}
                     >
                       Select File
                     </Button>
                     <p className="text-sm text-muted-foreground mt-2">
-                      Supported formats: PDF, DOCX, TXT
+                      Supported formats: PDF
                     </p>
                   </>
                 )}
@@ -490,19 +499,19 @@ export default function AdminPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Document ID</TableHead>
-                        <TableHead>Filename</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Processing Date</TableHead>
-                        <TableHead>Chunks Count</TableHead>
-                        <TableHead>Pages</TableHead>
-                        <TableHead>Actions</TableHead>
+                        <TableHead className="w-1/6 max-w-[150px]">Document ID</TableHead>
+                        <TableHead className="w-1/4 max-w-[200px]">Filename</TableHead>
+                        <TableHead className="w-[100px]">Status</TableHead>
+                        <TableHead className="w-[150px]">Processing Date</TableHead>
+                        <TableHead className="w-[100px] text-center">Chunks Count</TableHead>
+                        <TableHead className="w-[80px] text-center">Pages</TableHead>
+                        <TableHead className="w-[150px]">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {documents.map((doc) => (
                         <TableRow key={doc.document_id}>
-                          <TableCell className="font-mono text-xs">
+                          <TableCell className="font-mon">
                             <Button 
                               variant="link" 
                               className="p-0 h-auto font-mono text-xs text-primary hover:underline"
@@ -595,6 +604,15 @@ export default function AdminPage() {
                                 )}
                               </Button>
                             )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="ml-2"
+                              onClick={() => handleOpenViewer(doc)}
+                            >
+                              <Eye className="h-3 w-3 mr-1" />
+                              View Chunks
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -606,6 +624,14 @@ export default function AdminPage() {
           </Tabs>
         </CardContent>
       </Card>
+      {selectedDocumentForViewer && (
+                              <DocumentViewerModal
+                                isOpen={viewerOpen}
+                                onClose={() => setViewerOpen(false)}
+                                documentId={selectedDocumentForViewer.document_id}
+                                documentName={selectedDocumentForViewer.original_filename || 'Unnamed Document'}
+                              />
+                            )}
     </div>
   );
 }
