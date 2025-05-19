@@ -18,9 +18,10 @@ interface PDFPageViewerProps {
   zoom?: number;
   onLoaded?: (pageCount: number) => void;
   // Add this new prop
-  allBoundingBoxes?: Array<{
+   allBoundingBoxes?: Array<{
     bbox: number[];
     isActive: boolean;
+    color?: string; // Add color property
   }>;
 }
 
@@ -32,6 +33,7 @@ export default function PDFPageViewer({
   onLoaded,
   allBoundingBoxes = []
 }: PDFPageViewerProps) {
+  console.log(documentId,pageNumber,allBoundingBoxes);
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState<PDFPageProxy | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,6 +87,8 @@ export default function PDFPageViewer({
       isActive = false;
     };
   }, [documentId, onLoaded]);
+
+
 
   // Handle page changes
   useEffect(() => {
@@ -148,12 +152,12 @@ export default function PDFPageViewer({
     };
   }, [pdf, pageNumber]);
 
-  // Re-render when zoom changes
-  useEffect(() => {
-    if (page) {
-      renderPage(page, zoom);
-    }
-  }, [zoom]);
+useEffect(() => {
+  if (page) {
+    renderPage(page, zoom);
+  }
+}, [zoom, allBoundingBoxes, page]);
+
 
   const renderPage = async (pdfPage: PDFPageProxy, scale: number) => {
   if (!canvasRef.current) return;
@@ -196,40 +200,23 @@ export default function PDFPageViewer({
     try {
       // Wait for rendering to complete
       await renderTaskRef.current.promise;
+      
+      // IMPORTANT: Only render annotations after page rendering is complete
+      renderAnnotations(viewport);
+      
     } catch (err) {
-      // Specifically check for rendering cancelled exception
       if (err instanceof Error && 
           (err.message === 'Rendering cancelled' || 
            err.name === 'RenderingCancelledException')) {
         console.log('Render cancelled, this is normal during page navigation');
-        return; // Exit early without error
+        return;
       }
-      // Rethrow other errors
       throw err;
     }
     
     renderTaskRef.current = null;
 
-    // Clear previous annotations
-    if (annotationLayerRef.current) {
-      annotationLayerRef.current.innerHTML = '';
-      
-      // Render the main bbox if provided (for backward compatibility)
-      if (bbox && bbox.length === 4) {
-        renderAnnotation(bbox, viewport, true);
-      }
-      
-      // Render all additional bounding boxes if provided
-      if (allBoundingBoxes && allBoundingBoxes.length > 0) {
-        allBoundingBoxes.forEach(({ bbox, isActive }) => {
-          if (bbox && bbox.length === 4) {
-            renderAnnotation(bbox, viewport, isActive);
-          }
-        });
-      }
-    }
   } catch (err: any) {
-    // Skip rendering cancelled errors
     if (err instanceof Error && 
         (err.message === 'Rendering cancelled' || 
          err.name === 'RenderingCancelledException')) {
@@ -241,30 +228,96 @@ export default function PDFPageViewer({
   }
 };
 
+// Move annotation rendering to a separate function for clarity
+const renderAnnotations = (viewport: any) => {
+  console.log("Rendering annotations with viewport:", viewport);
+  
+  // Clear previous annotations
+  if (annotationLayerRef.current) {
+    annotationLayerRef.current.innerHTML = '';
+    console.log("Cleared previous annotations");
+    
+    // Render the main bbox if provided (for backward compatibility)
+    if (bbox && bbox.length === 4) {
+      console.log("Rendering main bbox:", bbox);
+      renderAnnotation(bbox, viewport, true);
+    }
+    
+    // Render all additional bounding boxes if provided
+    if (allBoundingBoxes && allBoundingBoxes.length > 0) {
+      console.log(`Rendering ${allBoundingBoxes.length} bounding boxes`);
+      allBoundingBoxes.forEach((boxInfo, index) => {
+        if (boxInfo.bbox && boxInfo.bbox.length === 4) {
+          console.log(`Rendering box ${index}:`, boxInfo);
+          renderAnnotation(
+            boxInfo.bbox, 
+            viewport, 
+            boxInfo.isActive,
+            boxInfo.color
+          );
+        } else {
+          console.warn(`Invalid bbox at index ${index}:`, boxInfo.bbox);
+        }
+      });
+    } else {
+      console.log("No additional bounding boxes to render");
+    }
+  } else {
+    console.warn("annotationLayerRef is not available");
+  }
+};
+
   // Render annotations
-  const renderAnnotation = (bboxCoords: number[], viewport: any, isActive: boolean = true) => {
-  if (!annotationLayerRef.current) return;
+  const renderAnnotation = (bboxCoords: number[], viewport: any, isActive: boolean = true, color?: string) => {
+  if (!annotationLayerRef.current) {
+    console.warn("Cannot render annotation: annotationLayerRef is null");
+    return;
+  }
+
+  console.log(`Rendering annotation: bbox=${bboxCoords}, isActive=${isActive}, color=${color}`);
 
   // Create highlight element
   const highlight = document.createElement('div');
   highlight.className = 'pdf-annotation';
   highlight.style.position = 'absolute';
+  highlight.style.pointerEvents = 'none'; // Make sure it doesn't interfere with clicks
   
-  // Style based on whether this is the active highlight
-  if (isActive) {
-    highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
-    highlight.style.border = '2px solid rgba(255, 204, 0, 0.7)';
-    // Add animation only for active highlight
-    highlight.style.animation = 'pulse-highlight 2s infinite';
+  // Use the provided color or fall back to default colors
+  if (color) {
+    // Make color more visible by ensuring proper opacity
+    highlight.style.backgroundColor = `${color}33`; // 20% opacity
+    highlight.style.border = `2px solid ${color}`;
+    
+    // Add data attributes for debugging
+    highlight.setAttribute('data-color', color);
   } else {
-    highlight.style.backgroundColor = 'rgba(173, 216, 230, 0.2)';
-    highlight.style.border = '1px solid rgba(100, 149, 237, 0.5)';
+    // Original styling as fallback
+    if (isActive) {
+      highlight.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+      highlight.style.border = '2px solid rgba(255, 204, 0, 0.7)';
+      highlight.style.animation = 'pulse-highlight 2s infinite';
+    } else {
+      highlight.style.backgroundColor = 'rgba(173, 216, 230, 0.2)';
+      highlight.style.border = '1px solid rgba(100, 149, 237, 0.5)';
+    }
   }
   
   highlight.style.borderRadius = '3px';
+  highlight.style.zIndex = '100'; // Ensure it's above the PDF content
   
   // Extract coordinates
   const [x1, y1, x2, y2] = bboxCoords;
+  
+  // Validate bbox - coordinates should be numbers and form a valid rectangle
+  if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
+    console.warn("Invalid bbox coordinates, contains NaN:", bboxCoords);
+    return;
+  }
+  
+  if (x2 <= x1 || y2 <= y1) {
+    console.warn("Invalid bbox dimensions:", bboxCoords);
+    return;
+  }
   
   // Scale coordinates based on viewport scale
   const scaledX1 = x1 * viewport.scale;
@@ -278,24 +331,15 @@ export default function PDFPageViewer({
   highlight.style.width = `${scaledX2 - scaledX1}px`;
   highlight.style.height = `${scaledY2 - scaledY1}px`;
   
+  // Add data attributes for easier debugging
+  highlight.setAttribute('data-bbox', JSON.stringify(bboxCoords));
+  highlight.setAttribute('data-scaled-bbox', JSON.stringify([scaledX1, scaledY1, scaledX2, scaledY2]));
+  
   // Add to annotation layer
   annotationLayerRef.current.appendChild(highlight);
+  console.log("Annotation added to layer");
   
-  // Add the animation style if it doesn't exist and this is the active highlight
-  if (isActive && !document.getElementById('highlight-animation')) {
-    const style = document.createElement('style');
-    style.id = 'highlight-animation';
-    style.textContent = `
-      @keyframes pulse-highlight {
-        0% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0.7); }
-        70% { box-shadow: 0 0 0 10px rgba(255, 204, 0, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(255, 204, 0, 0); }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-  
-  // Scroll to the annotation if it's the active one
+  // Scroll to the active annotation
   if (isActive) {
     setTimeout(() => {
       if (containerRef.current) {
@@ -313,7 +357,6 @@ export default function PDFPageViewer({
     }, 100);
   }
 };
-
   return (
     <div className="flex flex-col items-center w-full h-full">
       <div 

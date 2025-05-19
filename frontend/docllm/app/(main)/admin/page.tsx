@@ -428,13 +428,13 @@ const handleOpenViewer = (doc: any) => {
                       className="mt-2"
                       onClick={() => {
                         // Directly trigger the file input click
-                        document.getElementById('file-upload').click();
+                        document.getElementById('file-upload')?.click();
                       }}
                     >
                       Select File
                     </Button>
                     <p className="text-sm text-muted-foreground mt-2">
-                      Supported formats: PDF, DOCX, TXT
+                      Supported formats: PDF
                     </p>
                   </>
                 )}
@@ -499,19 +499,19 @@ const handleOpenViewer = (doc: any) => {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Document ID</TableHead>
-                        <TableHead>Filename</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Processing Date</TableHead>
-                        <TableHead>Chunks Count</TableHead>
-                        <TableHead>Pages</TableHead>
-                        <TableHead>Actions</TableHead>
+                        <TableHead className="w-1/6 max-w-[150px]">Document ID</TableHead>
+                        <TableHead className="w-1/4 max-w-[200px]">Filename</TableHead>
+                        <TableHead className="w-[100px]">Status</TableHead>
+                        <TableHead className="w-[150px]">Processing Date</TableHead>
+                        <TableHead className="w-[100px] text-center">Chunks Count</TableHead>
+                        <TableHead className="w-[80px] text-center">Pages</TableHead>
+                        <TableHead className="w-[150px]">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {documents.map((doc) => (
                         <TableRow key={doc.document_id}>
-                          <TableCell className="font-mono text-xs">
+                          <TableCell className="font-mon">
                             <Button 
                               variant="link" 
                               className="p-0 h-auto font-mono text-xs text-primary hover:underline"

@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button';
 import { adminApi } from '@/lib/api';
 import PDFPageViewer from '@/components/PDFPageViewer';
 import { ChevronLeft, ChevronRight, X, Download } from 'lucide-react';
-
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface DocumentViewerModalProps {
   isOpen: boolean;
@@ -57,6 +58,30 @@ export default function DocumentViewerModal({
     }
   }, [chunks, currentPage]);
 
+const getChunkColor = (index: number): string => {
+  // Array of distinct colors - you can expand this with more colors
+  const colors = [
+    '#FF5733', // Red-orange
+    '#33FF57', // Green
+    '#3357FF', // Blue
+    '#FF33F5', // Pink
+    '#33FFF5', // Cyan
+    '#F5FF33', // Yellow
+    '#FF8333', // Orange
+    '#8333FF', // Purple
+    '#33FFBD', // Mint
+    '#FF3355', // Red
+    '#33C4FF', // Light blue
+    '#FF33BD', // Magenta
+    '#C4FF33', // Lime
+    '#FF5733', // Coral
+    '#33FF8A', // Seafoam
+    '#8A33FF'  // Lavender
+  ];
+  
+  // Get color based on index, cycling through if needed
+  return colors[index % colors.length];
+};
   const loadChunks = async () => {
     setLoading(true);
     setError(null);
@@ -121,29 +146,30 @@ export default function DocumentViewerModal({
   };
 
   const getAllPageBoundingBoxes = () => {
-    return pageChunks
-      .filter(chunk => 
-        (chunk.bounding_boxes && chunk.bounding_boxes.length > 0) ||
-        (chunk.metadata && chunk.metadata.bbox)
-      )
-      .map((chunk, index) => {
-        // Get the bbox either from bounding_boxes or metadata.bbox
-        const bbox = chunk.bounding_boxes && chunk.bounding_boxes.length > 0 
-          ? chunk.bounding_boxes[0] 
-          : chunk.metadata?.bbox;
-          
-        return {
-          bbox: bbox,
-          isActive: index === selectedChunkIndex
-        };
-      });
-  };
-
-  // Display a human-friendly page number (converting from 0-based to 1-based)
-  const getDisplayPageNumber = (dbPageNumber: number | null | undefined) => {
-    if (dbPageNumber === null || dbPageNumber === undefined) return 'Unknown';
-    return (dbPageNumber + 1).toString();
-  };
+  return pageChunks
+    .filter(chunk => 
+      (chunk.bounding_boxes && chunk.bounding_boxes.length > 0) ||
+      (chunk.metadata && chunk.metadata.bbox)
+    )
+    .map((chunk, index) => {
+      // Get the bbox either from bounding_boxes or metadata.bbox
+      let bboxData = chunk.bounding_boxes && chunk.bounding_boxes.length > 0 
+        ? chunk.bounding_boxes[0] 
+        : chunk.metadata?.bbox;
+      
+      // Extract the actual coordinates - this is the key fix
+      // If bboxData is an object with a bbox property, extract that array
+      const coordinates = bboxData && typeof bboxData === 'object' && 'bbox' in bboxData 
+        ? bboxData.bbox  // Extract the nested bbox array
+        : bboxData;      // Use directly if it's already an array
+        
+      return {
+        bbox: coordinates, // This should now be a direct array of 4 numbers
+        isActive: index === selectedChunkIndex,
+        color: getChunkColor(index)
+      };
+    });
+};
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
@@ -203,89 +229,100 @@ export default function DocumentViewerModal({
               {/* PDF Viewer (Left Side) */}
               <div className="flex-1 overflow-hidden border rounded-md">
                 <PDFPageViewer
-                  documentId={documentId}
-                  pageNumber={currentPage} // PDFPageViewer already expects 1-based
-                  bbox={getSelectedBoundingBox()}
-                  zoom={zoom}
-                  onLoaded={(pageCount) => setTotalPages(pageCount)}
-                  allBoundingBoxes={getAllPageBoundingBoxes()}
+                documentId={documentId}
+                pageNumber={currentPage}
+                bbox={getSelectedBoundingBox()}
+                zoom={zoom}
+                onLoaded={(pageCount) => setTotalPages(pageCount)}
+                allBoundingBoxes={getAllPageBoundingBoxes()}
                 />
               </div>
               
               {/* All Chunks for Current Page (Right Side) */}
               <div className="flex-1 flex flex-col border rounded-md overflow-hidden">
-                <div className="p-4 border-b bg-muted/30">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-medium">
-                      {pageChunks.length} Chunks on Page {currentPage}
-                    </h3>
-                  </div>
-                  
-                  <div className="flex gap-2 mb-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handlePageChange(currentPage - 1)}
-                      disabled={currentPage <= 1}
-                    >
-                      <ChevronLeft className="h-4 w-4 mr-1" />
-                      Previous Page
-                    </Button>
-                    <span className="flex items-center px-2">
-                      Page {currentPage} of {totalPages}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handlePageChange(currentPage + 1)}
-                      disabled={currentPage >= totalPages}
-                    >
-                      Next Page
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
-                  </div>
+  <div className="p-4 border-b bg-muted/30 sticky top-0 z-10">
+    {/* Header content remains the same */}
+    <div className="flex items-center justify-between mb-2">
+      <h3 className="font-medium">
+        {pageChunks.length} Chunks on Page {currentPage}
+      </h3>
+    </div>
+    
+    <div className="flex gap-2 mb-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => handlePageChange(currentPage - 1)}
+        disabled={currentPage <= 1}
+      >
+        <ChevronLeft className="h-4 w-4 mr-1" />
+        Previous Page
+      </Button>
+      <span className="flex items-center px-2">
+        Page {currentPage} of {totalPages}
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => handlePageChange(currentPage + 1)}
+        disabled={currentPage >= totalPages}
+      >
+        Next Page
+        <ChevronRight className="h-4 w-4 ml-1" />
+      </Button>
+    </div>
+  </div>
+  
+  {/* Update the scrollable container */}
+  <div className="flex-1 overflow-y-auto" style={{ maxHeight: "calc(80vh - 120px)" }}>
+    {pageChunks.length > 0 ? (
+      <div className="divide-y">
+        {pageChunks.map((chunk, index) => {
+          const chunkColor = getChunkColor(index);
+          return (
+            <div 
+              key={`chunk-${index}-${chunk.chunk_id || 'unknown'}`}
+              className={`p-4 ${selectedChunkIndex === index ? 'bg-muted/30' : ''} cursor-pointer hover:bg-muted/20`}
+              onClick={() => handleChunkSelect(index)}
+            >
+              <div className="mb-2 text-xs font-mono flex justify-between items-center">
+                <div className="flex items-center">
+                  {/* Color indicator matching the bbox */}
+                  <span 
+                    className="inline-block h-4 w-4 mr-2 rounded-sm" 
+                    style={{ backgroundColor: chunkColor, border: '1px solid rgba(0,0,0,0.1)' }}
+                  ></span>
+                  <strong>Chunk {index + 1}</strong>
                 </div>
-                
-                {/* All chunks display */}
-                <div className="flex-1 overflow-auto">
-                  {pageChunks.length > 0 ? (
-                    <div className="divide-y">
-                      {pageChunks.map((chunk, index) => (
-                        <div 
-                          key={`chunk-${index}-${chunk.chunk_id || 'unknown'}`}
-                          className={`p-4 ${selectedChunkIndex === index ? 'bg-muted/30' : ''} cursor-pointer`}
-                          onClick={() => handleChunkSelect(index)}
-                        >
-                          <div className="mb-2 text-xs font-mono flex justify-between">
-                            <span>
-                              <strong>Chunk {index + 1}</strong>
-                            </span>
-                            {chunk.bounding_boxes && (
-                              <span className="text-muted-foreground">
-                                {JSON.stringify(chunk.bounding_boxes[0]).slice(0, 30)}...
-                              </span>
-                            )}
-                          </div>
-                          
-                          {/* Check if Markdown component is available */}
-                          {typeof Markdown !== 'undefined' ? (
-                            <Markdown content={chunk.content} />
-                          ) : (
-                            <div className="whitespace-pre-wrap border p-3 rounded-md bg-white text-sm">
-                              {chunk.content}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-muted-foreground p-4">
-                      No chunks available for this page
-                    </div>
-                  )}
-                </div>
+                {chunk.bounding_boxes && (
+                  <span className="text-muted-foreground">
+                    {JSON.stringify(chunk.bounding_boxes[0]).slice(0, 30)}...
+                  </span>
+                )}
               </div>
+              
+              {/* Wrap the content with a border of the same color */}
+             <div 
+                className="p-3 rounded-md bg-white text-sm overflow-auto"
+                style={{ border: `2px solid ${chunkColor}` }}
+                >
+                <ReactMarkdown 
+                    remarkPlugins={[remarkGfm]} 
+                >
+                    {chunk.content}
+                </ReactMarkdown>
+                </div>
             </div>
+          );
+        })}
+      </div>
+    ) : (
+      <div className="flex items-center justify-center h-full text-muted-foreground p-4">
+        No chunks available for this page
+      </div>
+    )}
+  </div>
+</div></div>
           </>
         )}
       </DialogContent>
