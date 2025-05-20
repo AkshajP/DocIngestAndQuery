@@ -174,22 +174,38 @@ class DocumentMetadataRepository:
                 logger.error(f"Error deleting document from registry: {str(e)}")
                 return False
     
-    def get_document(self, document_id: str) -> Optional[Dict[str, Any]]:
+    def get_document(self, document_id: str, user_id: Optional[str] = None, case_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Get document metadata.
+        Get document metadata with access control.
         
         Args:
             document_id: Document ID
+            user_id: Optional user ID for access control
+            case_id: Optional case ID for verification
             
         Returns:
-            Document metadata dictionary or None if not found
+            Document metadata dictionary or None if not found or no access
         """
         with self.metadata_lock:
-            return self.registry["documents"].get(document_id)
+            document = self.registry["documents"].get(document_id)
+            
+            # If document not found, return None
+            if not document:
+                return None
+                
+            # If case_id provided, verify document belongs to that case
+            if case_id and document.get("case_id") != case_id:
+                return None
+                
+            # If user_id provided, verify they have access to the document's case
+            # This would check user_case_access in a complete implementation
+            
+            return document
     
     def list_documents(self) -> List[Dict[str, Any]]:
         """
         List all documents in the registry.
+        Necessarily an admin function, since it bypasses case filter.
         
         Returns:
             List of document metadata dictionaries
@@ -197,7 +213,7 @@ class DocumentMetadataRepository:
         with self.metadata_lock:
             return list(self.registry["documents"].values())
     
-    def find_documents_by_case(self, case_id: str) -> List[Dict[str, Any]]:
+    def list_documents_by_case(self, case_id: str) -> List[Dict[str, Any]]:
         """
         Find documents belonging to a specific case.
         

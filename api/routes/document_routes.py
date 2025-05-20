@@ -22,7 +22,7 @@ async def list_processed_documents(
     doc_repository = DocumentMetadataRepository()
     
     # Get all documents
-    all_documents = doc_repository.list_documents()
+    all_documents = doc_repository.list_documents_by_case(case_id=case_id)
     
     # Apply pagination
     total = len(all_documents)
