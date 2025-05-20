@@ -1,0 +1,10 @@
+fastapi==0.115.12
+uvicorn==0.34.0
+pymilvus==2.5.6
+psycopg2-binary==2.9.10  
+python-multipart==0.0.20
+PyMuPDF==1.24.14
+aiofiles==23.2.1
+python-dotenv==1.1.0
+boto3==1.37.24
+pydantic==2.11.1

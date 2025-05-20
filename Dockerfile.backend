@@ -1,0 +1,55 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-dev \
+    git \
+    curl \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libpq-dev \  
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Clone and install MinerU
+RUN git clone -b release-1.2.2 https://github.com/opendatalab/MinerU.git
+
+# Install MinerU and its dependencies
+WORKDIR /app/MinerU
+RUN pip install ".[full]" --extra-index-url https://wheels.myhloli.com && \
+    pip install huggingface_hub
+
+# Return to app directory
+WORKDIR /app
+
+# Download the model script
+RUN curl -o download_models_hf.py https://raw.githubusercontent.com/opendatalab/MinerU/release-1.2.2/scripts/download_models_hf.py
+
+# Download the models
+RUN python download_models_hf.py
+
+# Clean up the repository
+RUN rm -rf MinerU
+
+# Copy application code
+COPY . .
+
+# Create document store directory
+RUN mkdir -p document_store
+
+# Expose the port
+EXPOSE 9000
+
+# Set environment variables
+ENV PYTHONPATH=/app
+
+# Command to run the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000"]

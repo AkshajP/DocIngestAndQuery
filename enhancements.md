@@ -17,6 +17,11 @@ to ensure the folder structure is seen else files will be under un-categorized.
     - [x] Deciding migration of `registry.json`
 - [x] Stream response
 
+[ ] Internal knowledge base of SOPs
+[ ] FAQ for non client, Chatbot for client data, internal chatbot for sop data
+[ ] use case to model map
+
+
 ---
 
 - [x] ag grid interact
@@ -144,5 +149,37 @@ Add proper error handling and loading states
 
 With these improvements, the document selector will provide a powerful and intuitive interface for users to find and select documents for chat sessions.
 
+llama 4 diagram:
 
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant ChatHistory as Chat History
+    participant IntentRouter as Intent Router
+    participant ToolSelector as Tool Selector
+    participant ToolExecutor as Tool Executor
+    participant KnowledgeGraph as Knowledge Graph
+    participant ResponseGenerator as Response Generator
+    participant FeedbackLoop as Feedback Loop
 
+    User->>ChatHistory: Append input to history
+    ChatHistory->>IntentRouter: Send input + context
+    IntentRouter->>IntentRouter: Determine intent
+
+    alt Intent = Question
+        IntentRouter->>ToolSelector: Route to Tool Selector
+        ToolSelector->>ToolExecutor: Select and execute tool
+        ToolExecutor->>KnowledgeGraph: Retrieve relevant info
+        KnowledgeGraph-->>ToolExecutor: Return info
+        ToolExecutor->>ResponseGenerator: Provide tool output
+    else Intent = Statement
+        IntentRouter->>ResponseGenerator: Route to Response Generator
+    end
+
+    ResponseGenerator->>ResponseGenerator: Generate response with context
+    ResponseGenerator->>FeedbackLoop: Send for evaluation
+    FeedbackLoop->>FeedbackLoop: Assess quality
+    FeedbackLoop->>ResponseGenerator: Suggest refinements
+    ResponseGenerator->>User: Return final response
+
+```
