@@ -30,11 +30,8 @@ RUN pip install ".[full]" --extra-index-url https://wheels.myhloli.com && \
 # Return to app directory
 WORKDIR /app
 
-# Download the model script
+# Download the model script (but don't run it during build)
 RUN curl -o download_models_hf.py https://raw.githubusercontent.com/opendatalab/MinerU/release-1.2.2/scripts/download_models_hf.py
-
-# Download the models
-RUN python download_models_hf.py
 
 # Clean up the repository
 RUN rm -rf MinerU
@@ -45,11 +42,83 @@ COPY . .
 # Create document store directory
 RUN mkdir -p document_store
 
+# Create cache directory
+RUN mkdir -p /root/.cache
+
+# Create startup script that downloads models and updates config
+RUN echo '#!/bin/bash\n\
+set -e\n\
+\n\
+# Function to update config.json with environment variables\n\
+update_config() {\n\
+    echo "Updating config.json with environment variables..."\n\
+    \n\
+    # Update vector_db host and port\n\
+    if [ ! -z "$DOCRAG_VECTOR_DB_HOST" ]; then\n\
+        python3 -c "\n\
+import json\n\
+import os\n\
+with open('"'"'config.json'"'"', '"'"'r'"'"') as f:\n\
+    config = json.load(f)\n\
+config['"'"'vector_db'"'"']['"'"'host'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_HOST'"'"', '"'"'localhost'"'"')\n\
+config['"'"'vector_db'"'"']['"'"'port'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_PORT'"'"', '"'"'19530'"'"')\n\
+with open('"'"'config.json'"'"', '"'"'w'"'"') as f:\n\
+    json.dump(config, f, indent=2)\n\
+host = config['"'"'vector_db'"'"']['"'"'host'"'"']\n\
+port = config['"'"'vector_db'"'"']['"'"'port'"'"']\n\
+print('"'"'Updated vector_db config: host='"'"' + host + '"'"', port='"'"' + port)\n\
+"\n\
+    fi\n\
+}\n\
+\n\
+# Function to download models with retry logic\n\
+download_models() {\n\
+    local max_retries=3\n\
+    local retry_delay=30\n\
+    \n\
+    for ((i=1; i<=max_retries; i++)); do\n\
+        echo "Attempt $i of $max_retries: Downloading models..."\n\
+        if timeout 1800 python download_models_hf.py; then\n\
+            echo "Models downloaded successfully!"\n\
+            touch /root/.cache/models_downloaded\n\
+            return 0\n\
+        else\n\
+            echo "Download attempt $i failed"\n\
+            if [ $i -lt $max_retries ]; then\n\
+                echo "Retrying in $retry_delay seconds..."\n\
+                sleep $retry_delay\n\
+            fi\n\
+        fi\n\
+    done\n\
+    \n\
+    echo "Warning: Failed to download models after $max_retries attempts"\n\
+    echo "Application will start but may not function properly"\n\
+    return 1\n\
+}\n\
+\n\
+# Update configuration with environment variables\n\
+update_config\n\
+\n\
+# Check if models are already downloaded\n\
+if [ ! -f "/root/.cache/models_downloaded" ]; then\n\
+    echo "Models not found. Downloading on first startup..."\n\
+    download_models\n\
+else\n\
+    echo "Models already downloaded, skipping download"\n\
+fi\n\
+\n\
+# Start the application\n\
+echo "Starting application..."\n\
+exec uvicorn main:app --host 0.0.0.0 --port 9000' > /app/startup.sh
+
+# Make startup script executable
+RUN chmod +x /app/startup.sh
+
 # Expose the port
 EXPOSE 9000
 
 # Set environment variables
 ENV PYTHONPATH=/app
 
-# Command to run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000"]
+# Use startup script instead of direct uvicorn command
+CMD ["/app/startup.sh"]

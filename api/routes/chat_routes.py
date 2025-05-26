@@ -18,15 +18,8 @@ from services.chat.history import ChatHistoryService
 from services.retrieval.query_engine import QueryEngine
 from services.feedback.manager import FeedbackManager
 from core.config import get_config
+from api.routes.access_control import validate_user_case_access, get_current_case, get_current_user
 
-# Dependency functions (to be replaced with actual auth middleware)
-async def get_current_user():
-    # This would normally verify the token and return the user_id
-    return "user_test"
-
-async def get_current_case():
-    # This would normally get the current case from the request
-    return "default"
 
 router = APIRouter(prefix="/ai/chats", tags=["chats"])
 
@@ -34,7 +27,8 @@ router = APIRouter(prefix="/ai/chats", tags=["chats"])
 async def create_chat(
     request: ChatCreateRequest, 
     user_id: str = Depends(get_current_user), 
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """
     Create a new chat with welcome message.
@@ -102,7 +96,8 @@ async def list_chats(
     limit: int = 10,
     offset: int = 0,
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """List all chats for the current user and case"""
     chat_service = ChatManager()
@@ -159,7 +154,8 @@ async def list_chats(
 async def get_chat(
     chat_id: str = Path(..., description="Chat ID"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Get chat details including recent messages"""
     chat_service = ChatManager()
@@ -214,7 +210,8 @@ async def update_chat(
     request: ChatUpdateRequest,
     chat_id: str = Path(..., description="Chat ID"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Update chat properties"""
     chat_service = ChatManager()
@@ -243,7 +240,8 @@ async def update_chat(
 async def delete_chat(
     chat_id: str = Path(..., description="Chat ID"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Delete a chat"""
     chat_service = ChatManager()
@@ -265,7 +263,8 @@ async def get_chat_history(
     limit: int = 20,
     offset: int = 0,
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Get paginated chat history"""
     chat_service = ChatManager()
@@ -294,7 +293,8 @@ async def update_chat_documents(
     request: ChatDocumentsUpdateRequest,
     chat_id: str = Path(..., description="Chat ID"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Update documents loaded in a chat"""
     chat_service = ChatManager()
@@ -337,7 +337,8 @@ async def submit_query(
     chat_id: str = Path(..., description="Chat ID"),
     stream: bool = Query(True, description="Stream the response as Server-Sent Events"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Submit a query in a chat with optional streaming.
     
@@ -496,7 +497,8 @@ async def submit_query(
 async def generate_chat_title(
     chat_id: str = Path(..., description="Chat ID"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Generate a title for the chat based on its content"""
     chat_service = ChatManager()
@@ -527,7 +529,8 @@ async def regenerate_response(
     chat_id: str = Path(..., description="Chat ID"),
     message_id: str = Path(..., description="Message ID"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """Regenerate a response for a specific message"""
     chat_service = ChatManager()
@@ -775,8 +778,7 @@ async def get_message_highlights(
     document_id: str = Path(..., description="Document ID"),
     highlight_data: Optional[str] = Query(None, description="JSON string of highlights data"),
     zoom: float = Query(1.5, description="Zoom level for highlighting"),
-    user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    _: bool = Depends(validate_user_case_access)
 ):
     """Get highlighted PDF regions for message citations"""
     # Initialize the PDF highlighter
@@ -828,7 +830,8 @@ async def list_processed_documents(
     limit: int = Query(10, description="Number of documents per page"),
     offset: int = Query(0, description="Pagination offset"),
     user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """List all processed documents accessible to the current user"""
     doc_repository = DocumentMetadataRepository()

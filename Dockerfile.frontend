@@ -1,21 +1,30 @@
+# Dockerfile.frontend
 FROM node:23-alpine
 
 WORKDIR /app
 
-COPY package.json ./
-COPY package-lock.json* ./
+# Install dependencies needed for canvas
+RUN apk add --no-cache \
+    build-base \
+    g++ \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    giflib-dev \
+    python3
 
+# Copy package files first (for better caching)
+COPY package*.json ./
 
 # Install dependencies
+RUN npm install --legacy-peer-deps
 RUN npm install -g pnpm
-RUN pnpm install
 
-# Copy the rest of the frontend code
+# Copy the rest of the application
 COPY . .
 
-
-# Expose port
+# Expose the port
 EXPOSE 3000
 
-# Command to start development server
-CMD ["pnpm", "dev", "--host", "0.0.0.0"]
+# Start the application
+CMD ["pnpm", "dev"]

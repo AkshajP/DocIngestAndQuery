@@ -841,3 +841,99 @@ class ChatRepository:
                 error_details=row["error_details"],
                 response_time=row["response_time"]
             )
+
+
+class UserCaseRepository:
+    """Repository for managing user-case access relationships"""
+    
+    def __init__(self, db_config=None):
+        """Initialize with the same database connection approach as ChatRepository"""
+        self.config = db_config or get_config().database
+        self.conn = None
+        try:
+            self._connect()
+        except Exception as e:
+            logger.error(f"Error connecting to database: {str(e)}")
+            logger.warning("Operating in mock mode due to database connection failure")
+    
+    def _connect(self):
+        """Connect to the database"""
+        try:
+            self.conn = psycopg2.connect(
+                host=self.config.host,
+                port=self.config.port,
+                dbname=self.config.dbname,
+                user=self.config.user,
+                password=self.config.password,
+                connect_timeout=self.config.connection_timeout
+            )
+            logger.info("Connected to user-case access database")
+        except Exception as e:
+            logger.error(f"Error connecting to database: {str(e)}")
+            raise
+    
+    def _ensure_connection(self):
+        """Ensure database connection is active"""
+            
+        try:
+            if not self.conn or self.conn.closed:
+                self._connect()
+        except Exception as e:
+            logger.error(f"Failed to reconnect to database: {str(e)}")
+            
+    
+    def check_access(self, user_id: str, case_id: str, required_role: Optional[str] = None) -> bool:
+        """
+        Check if user has access to the specified case, optionally with required role.
+        
+        Args:
+            user_id: User ID
+            case_id: Case ID
+            required_role: Optional role requirement ("owner", "editor", "viewer")
+                          Lower roles have less permissions than higher roles
+                          
+        Returns:
+            True if user has access with sufficient role, False otherwise
+        """
+        self._ensure_connection()
+        
+        query = "SELECT role FROM user_case_access WHERE user_id = %s AND case_id = %s"
+        
+        with self.conn.cursor() as cursor:
+            cursor.execute(query, (user_id, case_id))
+            result = cursor.fetchone()
+            
+            if not result:
+                return False
+                
+            # If no specific role is required, any access is sufficient
+            if required_role is None:
+                return True
+                
+            user_role = result[0]
+            
+            # Role hierarchy: owner > editor > viewer
+            role_hierarchy = {"owner": 3, "editor": 2, "viewer": 1}
+            
+            # Check if user's role has sufficient permissions
+            return role_hierarchy.get(user_role, 0) >= role_hierarchy.get(required_role, 0)
+    
+    def get_user_cases(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all cases the user has access to.
+        
+        Args:
+            user_id: User ID
+            
+        Returns:
+            List of dictionaries with case_id and role
+        """
+        self._ensure_connection()
+        
+        query = "SELECT case_id, role FROM user_case_access WHERE user_id = %s"
+        
+        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute(query, (user_id,))
+            rows = cursor.fetchall()
+            
+            return [dict(row) for row in rows]

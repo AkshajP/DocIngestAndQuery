@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Path, Response
 from fastapi.responses import FileResponse
 from typing import List, Dict, Any
 from db.document_store.repository import DocumentMetadataRepository
-from api.routes.chat_routes import get_current_user, get_current_case
+from api.routes.access_control import get_current_user, get_current_case, validate_user_case_access
 import os
 import fitz 
 import logging
@@ -15,8 +15,8 @@ router = APIRouter(prefix="/ai/documents", tags=["documents"])
 async def list_processed_documents(
     limit: int = Query(100, description="Number of documents per page"),
     offset: int = Query(0, description="Pagination offset"),
-    user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
 ):
     """List all processed documents accessible to the current user"""
     doc_repository = DocumentMetadataRepository()
@@ -52,8 +52,7 @@ async def list_processed_documents(
 @router.get("/{document_id}/file")
 async def get_document_file(
     document_id: str = Path(..., description="Document ID"),
-    user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    _: bool = Depends(validate_user_case_access)
 ):
     """Get the original document file."""
     doc_repository = DocumentMetadataRepository()
@@ -80,8 +79,7 @@ async def get_document_file(
 @router.get("/{document_id}")
 async def get_document_details(
     document_id: str = Path(..., description="Document ID"),
-    user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    _: bool = Depends(validate_user_case_access)
 ):
     """Get detailed document information."""
     doc_repository = DocumentMetadataRepository()
@@ -110,8 +108,7 @@ async def get_admin_document_details(
 async def get_document_page(
     document_id: str = Path(..., description="Document ID"),
     page_number: int = Path(..., description="Page number (1-based)"),
-    user_id: str = Depends(get_current_user),
-    case_id: str = Depends(get_current_case)
+    _: bool = Depends(validate_user_case_access)
 ):
     """
     Get a specific page from the document as a PDF.

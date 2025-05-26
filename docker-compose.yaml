@@ -1,4 +1,4 @@
-version: '3.5'
+version: '3.8'
 
 services:
   # Existing services from your docker-compose.yaml
@@ -8,11 +8,14 @@ services:
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
+
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
     command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - app-network
 
   minio:
     container_name: milvus-minio
@@ -23,6 +26,8 @@ services:
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
     command: minio server /minio_data
+    networks:
+      - app-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -38,6 +43,8 @@ services:
       POSTGRES_DB: yourdb
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - app-network
     ports:
       - "5433:5432"
 
@@ -50,6 +57,8 @@ services:
       MINIO_ADDRESS: minio:9000
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+    networks:
+      - app-network
     ports:
       - "19530:19530"
       - "9091:9091"
@@ -66,6 +75,8 @@ services:
       PGADMIN_CONFIG_SERVER_MODE: 'False'
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/pgadmin:/var/lib/pgadmin
+    networks:
+      - app-network
     ports:
       - "8080:80"
     depends_on:
@@ -81,24 +92,60 @@ services:
       - standalone
 
   # Add backend service
-  # backend:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.backend
-  #   container_name: docrag-backend
-  #   restart: always
-  #   ports:
-  #     - "9000:9000"
-  #   environment:
-  #     - DOCRAG_DATABASE_HOST=postgres
-  #     - DOCRAG_DATABASE_PORT=5432
-  #     - DOCRAG_VECTOR_DB_HOST=standalone
-  #     - DOCRAG_VECTOR_DB_PORT=19530
-  #   depends_on:
-  #     - postgres
-  #     - standalone
-  #   volumes:
-  #     - ./document_store:/app/document_store
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: docrag-backend
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
+    ports:
+      - "9000:9000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DOCRAG_DATABASE_HOST=postgres
+      - DOCRAG_DATABASE_PORT=5432
+      - DOCRAG_VECTOR_DB_HOST=standalone
+      - DOCRAG_VECTOR_DB_PORT=19530
+      # Database connection details
+      - DATABASE_URL=postgresql://youruser:yourpassword@postgres:5432/yourdb
+      # Milvus connection (multiple formats in case backend expects different var names)
+      - MILVUS_HOST=standalone
+      - MILVUS_PORT=19530
+      - MILVUS_URI=http://standalone:19530
+      - VECTOR_DB_HOST=standalone
+      - VECTOR_DB_PORT=19530
+      # Optional: Set Hugging Face cache directory
+      - HF_HOME=/root/.cache/huggingface
+      # Optional: Disable telemetry during model downloads
+      - HF_HUB_DISABLE_TELEMETRY=1
+      - OLLAMA_HOST=host.docker.internal     # Add this line
+      - OLLAMA_PORT=11434                    # Add this line  
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434 
+    depends_on:
+      - postgres
+      - standalone
+    volumes:
+      # Your existing document store volume
+      - ./document_store:/app/document_store
+      # New: Cache volume for downloaded models (persists across container restarts)
+      - model_cache:/root/.cache
+      # Optional: If you want to cache pip packages as well
+      - pip_cache:/root/.cache/pip
+    networks:
+      - app-network
+    # network_mode: "host"
+    # Optional: Add health check
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 60s
     # deploy:
       # resources:
       #   reservations:
@@ -108,24 +155,40 @@ services:
       #         capabilities: [gpu]
 
   # Add frontend service
-  # frontend:
-  #   build:
-  #     context: ./frontend/docllm
-  #     dockerfile: ../../Dockerfile.frontend
-  #   container_name: docrag-frontend
-  #   restart: always
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - NEXT_PUBLIC_API_BASE_URL=http://localhost:9000/ai
-  #     - BACKEND_API_URL=http://backend:9000/
-    # depends_on:
-    #   - backend
+  frontend:
+    build:
+      context: ./frontend/docllm
+      dockerfile: ../../Dockerfile.frontend
+    container_name: docrag-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:9000/ai
+      - BACKEND_API_URL=http://backend:9000/
+    networks:
+      - app-network
+    depends_on:
+      - backend
 
 volumes:
   etcd:
+    driver: local
   minio:
+    driver: local
   milvus:
+    driver: local
   postgres:
+    driver: local
   pgadmin:
+    driver: local
   document_store:
+    driver: local
+  model_cache:
+    driver: local
+  pip_cache:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

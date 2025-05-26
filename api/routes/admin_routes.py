@@ -10,17 +10,14 @@ from db.document_store.repository import DocumentMetadataRepository
 from services.document.upload import upload_document
 from core.config import get_config
 from fastapi import HTTPException, Path
-from api.routes.chat_routes import get_current_user, get_current_case
+from api.routes.access_control import get_admin_user
 import logging 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-# Dependency for admin authentication
-async def get_admin_user():
-    # This would normally verify the token and ensure admin privileges
-    return "admin_user"
+
 
 router = APIRouter(prefix="/ai/admin", tags=["admin"])
 
