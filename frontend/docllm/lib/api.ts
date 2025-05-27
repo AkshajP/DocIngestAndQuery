@@ -262,57 +262,99 @@ import {
     }};
   
   export const adminApi = {
-    getStats: async (): Promise<any> => {
-      return fetchWithErrorHandling<any>(`/admin/stats`);
-    },
+  getStats: async (): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/stats`);
+  },
+  
+  listDocuments: async (params?: { status?: string }): Promise<any> => {
+    const queryParams = new URLSearchParams();
+    if (params?.status) queryParams.append("status", params.status);
     
-    listDocuments: async (params?: { status?: string }): Promise<any> => {
-      const queryParams = new URLSearchParams();
-      if (params?.status) queryParams.append("status", params.status);
-      
-      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
-      return fetchWithErrorHandling<any>(`/admin/documents${queryString}`);
-    },
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
+    return fetchWithErrorHandling<any>(`/admin/documents${queryString}`);
+  },
+  
+  uploadDocument: async (file: File, caseId?: string): Promise<any> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (caseId) formData.append("case_id", caseId);
     
-    uploadDocument: async (file: File, caseId?: string): Promise<any> => {
-      const formData = new FormData();
-      formData.append("file", file);
-      if (caseId) formData.append("case_id", caseId);
-      
-      const response = await fetch(`${API_BASE_URL}/admin/documents/upload`, {
-        method: "POST",
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `API error: ${response.status}`);
-      }
-      
-      return await response.json();
-    },
+    const response = await fetch(`${API_BASE_URL}/admin/documents/upload`, {
+      method: "POST",
+      body: formData,
+    });
     
-    retryDocument: async (documentId: string): Promise<any> => {
-      return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/retry`, {
-        method: "POST",
-      });
-    },
-    getDocumentChunks: async (documentId: string, options?: { 
-      chunkType?: string, 
-      pageNumber?: number 
-    }): Promise<any> => {
-      const queryParams = new URLSearchParams();
-      
-      if (options?.chunkType) {
-        queryParams.append("chunk_type", options.chunkType);
-      }
-      
-      if (options?.pageNumber !== undefined) {
-        queryParams.append("page_number", options.pageNumber.toString());
-      }
-      
-      const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
-      
-      return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/chunks${queryString}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `API error: ${response.status}`);
     }
-  };
+    
+    return await response.json();
+  },
+  
+  // Enhanced retry with stage support
+  retryDocument: async (
+    documentId: string, 
+    options?: { 
+      fromStage?: string, 
+      forceRestart?: boolean 
+    }
+  ): Promise<any> => {
+    const queryParams = new URLSearchParams();
+    if (options?.fromStage) queryParams.append("from_stage", options.fromStage);
+    if (options?.forceRestart) queryParams.append("force_restart", "true");
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/retry${queryString}`, {
+      method: "POST",
+    });
+  },
+  
+  // New: Get processing status with stages
+  getDocumentProcessingStatus: async (documentId: string): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/processing-status`);
+  },
+  
+  // New: Get stage information
+  getDocumentStages: async (documentId: string): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/stages`);
+  },
+  
+  // New: Reset document to specific stage
+  resetDocumentToStage: async (documentId: string, stage: string): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/stages/${stage}/reset`, {
+      method: "POST",
+    });
+  },
+  
+  // New: Clean up stage data
+  cleanupStageData: async (documentId: string, stage: string): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/stages/${stage}/data`, {
+      method: "DELETE",
+    });
+  },
+  
+  // New: Get processing statistics
+  getProcessingStatistics: async (): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/documents/processing-stats`);
+  },
+  
+  getDocumentChunks: async (documentId: string, options?: { 
+    chunkType?: string, 
+    pageNumber?: number 
+  }): Promise<any> => {
+    const queryParams = new URLSearchParams();
+    
+    if (options?.chunkType) {
+      queryParams.append("chunk_type", options.chunkType);
+    }
+    
+    if (options?.pageNumber !== undefined) {
+      queryParams.append("page_number", options.pageNumber.toString());
+    }
+    
+    const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
+    
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/chunks${queryString}`);
+  }
+};

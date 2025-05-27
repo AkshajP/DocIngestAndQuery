@@ -3,14 +3,16 @@
     "debug": true,
     "log_level": "INFO",
     "vector_db": {
-      "host": "standalone",
+      "_host": "standalone",
+      "host": "localhost",
       "port": "19530",
       "collection_name": "document_store",
       "dimension": 3072,
       "partition_strategy": "document_id"
     },
     "ollama": {
-      "base_url": "http://hosts.docker.internal:11434",
+      "_base_url": "http://hosts.docker.internal:11434",
+      "base_url": "http://localhost:11434",
       "model": "llama3.2",
       "embed_model": "llama3.2",
       "temperature": 0.2,

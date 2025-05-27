@@ -7,6 +7,8 @@ from datetime import datetime
 from fastapi.responses import FileResponse
 from api.models.admin_models import SystemStatsResponse, DocumentStats, SystemHealthStats, SystemStorageStats, QueryStats
 from db.document_store.repository import DocumentMetadataRepository
+from services.document.persistent_upload_service import PersistentUploadService
+from services.document.processing_state_manager import ProcessingStage
 from services.document.upload import upload_document
 from core.config import get_config
 from fastapi import HTTPException, Path
@@ -291,3 +293,326 @@ async def get_document_chunks(
     except Exception as e:
         logger.error(f"Error retrieving document chunks: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error retrieving document chunks: {str(e)}")
+
+@router.get("/documents/{document_id}/processing-status")
+async def get_document_processing_status(
+    document_id: str,
+    admin_user: str = Depends(get_admin_user)
+):
+    """Get detailed processing status for a specific document."""
+    upload_service = PersistentUploadService()
+    result = upload_service.get_document_processing_status(document_id)
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=404, detail=result["error"])
+    
+    return result
+
+@router.post("/documents/{document_id}/retry")
+async def retry_document_processing(
+    document_id: str,
+    background_tasks: BackgroundTasks,
+    from_stage: Optional[str] = Query(None, description="Stage to retry from (optional)"),
+    force_restart: bool = Query(False, description="Force restart from beginning"),
+    admin_user: str = Depends(get_admin_user)
+):
+    """Retry processing a document from a specific stage or current failed stage."""
+    doc_repository = DocumentMetadataRepository()
+    document = doc_repository.get_document(document_id)
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Validate stage if provided
+    if from_stage:
+        valid_stages = [stage.value for stage in ProcessingStage]
+        if from_stage not in valid_stages:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid stage. Valid stages: {', '.join(valid_stages)}"
+            )
+    
+    # Get original file path
+    file_path = document.get("stored_file_path") or document.get("original_file_path")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Original file not found")
+    
+    # Update document status to processing
+    doc_repository.update_document(document_id, {
+        "status": "processing",
+        "retry_time": datetime.now().isoformat(),
+        "retry_count": document.get("retry_count", 0) + 1
+    })
+    
+    # Queue document processing in background
+    if force_restart:
+        # Use the persistent upload service with force restart
+        background_tasks.add_task(
+            _retry_with_persistent_service,
+            file_path=file_path,
+            document_id=document_id,
+            case_id=document.get("case_id", "default"),
+            force_restart=True
+        )
+    else:
+        # Use retry functionality
+        background_tasks.add_task(
+            _retry_from_stage,
+            document_id=document_id,
+            from_stage=from_stage,
+            case_id=document.get("case_id", "default")
+        )
+    
+    return {
+        "status": "processing",
+        "message": f"Document processing {'restarted' if force_restart else 'retried'}",
+        "document_id": document_id,
+        "from_stage": from_stage if not force_restart else "upload"
+    }
+
+@router.get("/documents/{document_id}/stages")
+async def get_document_stages(
+    document_id: str,
+    admin_user: str = Depends(get_admin_user)
+):
+    """Get status of all processing stages for a document."""
+    upload_service = PersistentUploadService()
+    result = upload_service.get_document_processing_status(document_id)
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=404, detail=result["error"])
+    
+    processing_status = result["processing_status"]
+    
+    # Format stage information for easier consumption
+    all_stages = [stage.value for stage in ProcessingStage]
+    stage_info = []
+    
+    for stage in all_stages:
+        is_completed = stage in processing_status.get("completed_stages", [])
+        completion_time = processing_status.get("stage_completion_times", {}).get(stage)
+        error_details = processing_status.get("stage_error_details", {}).get(stage)
+        retry_count = processing_status.get("retry_counts", {}).get(stage, 0)
+        
+        stage_info.append({
+            "stage": stage,
+            "status": "completed" if is_completed else "pending",
+            "is_current": stage == processing_status.get("current_stage"),
+            "completion_time": completion_time,
+            "error_details": error_details,
+            "retry_count": retry_count
+        })
+    
+    return {
+        "document_id": document_id,
+        "current_stage": processing_status.get("current_stage"),
+        "last_updated": processing_status.get("last_updated"),
+        "stages": stage_info
+    }
+
+@router.post("/documents/{document_id}/stages/{stage}/reset")
+async def reset_document_to_stage(
+    document_id: str,
+    stage: str,
+    background_tasks: BackgroundTasks,
+    admin_user: str = Depends(get_admin_user)
+):
+    """Reset document processing to a specific stage, clearing subsequent stages."""
+    # Validate stage
+    valid_stages = [stage_enum.value for stage_enum in ProcessingStage]
+    if stage not in valid_stages:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid stage. Valid stages: {', '.join(valid_stages)}"
+        )
+    
+    doc_repository = DocumentMetadataRepository()
+    document = doc_repository.get_document(document_id)
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Initialize upload service and reset
+    upload_service = PersistentUploadService()
+    
+    try:
+        # Get document paths for state manager initialization
+        doc_dir = os.path.join(upload_service.config.storage.storage_dir, document_id)
+        
+        # Initialize processing state manager
+        from services.document.processing_state_manager import ProcessingStateManager
+        state_manager = ProcessingStateManager(
+            document_id=document_id,
+            storage_adapter=upload_service.storage_adapter,
+            doc_dir=doc_dir
+        )
+        
+        # Reset to specified stage
+        success = state_manager.reset_to_stage(stage)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to reset document stage")
+        
+        # Update document metadata
+        doc_repository.update_document(document_id, {
+            "status": "processing",
+            "current_stage": stage,
+            "reset_time": datetime.now().isoformat(),
+            "processing_state": state_manager.get_stage_status()
+        })
+        
+        return {
+            "status": "success",
+            "message": f"Document reset to stage '{stage}'",
+            "document_id": document_id,
+            "new_current_stage": stage
+        }
+        
+    except Exception as e:
+        logger.error(f"Error resetting document {document_id} to stage {stage}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error resetting document: {str(e)}")
+
+@router.delete("/documents/{document_id}/stages/{stage}/data")
+async def cleanup_stage_data(
+    document_id: str,
+    stage: str,
+    admin_user: str = Depends(get_admin_user)
+):
+    """Clean up intermediate data for a specific stage."""
+    # Validate stage
+    valid_stages = [stage_enum.value for stage_enum in ProcessingStage]
+    if stage not in valid_stages:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid stage. Valid stages: {', '.join(valid_stages)}"
+        )
+    
+    doc_repository = DocumentMetadataRepository()
+    document = doc_repository.get_document(document_id)
+    
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    try:
+        # Initialize upload service
+        upload_service = PersistentUploadService()
+        doc_dir = os.path.join(upload_service.config.storage.storage_dir, document_id)
+        
+        # Initialize processing state manager
+        from services.document.processing_state_manager import ProcessingStateManager
+        state_manager = ProcessingStateManager(
+            document_id=document_id,
+            storage_adapter=upload_service.storage_adapter,
+            doc_dir=doc_dir
+        )
+        
+        # Clean up stage data
+        success = state_manager.cleanup_stage_data(stage)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to cleanup stage data")
+        
+        return {
+            "status": "success",
+            "message": f"Cleaned up data for stage '{stage}'",
+            "document_id": document_id,
+            "stage": stage
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up stage {stage} for document {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error cleaning up stage data: {str(e)}")
+    
+@router.get("/documents/processing-stats")
+async def get_processing_statistics(
+    admin_user: str = Depends(get_admin_user)
+):
+    """Get statistics about document processing stages across all documents."""
+    doc_repository = DocumentMetadataRepository()
+    all_documents = doc_repository.list_documents()
+    
+    stats = {
+        "total_documents": len(all_documents),
+        "by_status": {},
+        "by_current_stage": {},
+        "failed_stages": {},
+        "retry_counts": {},
+        "processing_times": {
+            "avg_total": 0,
+            "avg_by_stage": {}
+        }
+    }
+    
+    # Collect statistics
+    total_processing_times = []
+    stage_processing_times = {}
+    
+    for doc in all_documents:
+        status = doc.get("status", "unknown")
+        stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
+        
+        # Get processing state if available
+        processing_state = doc.get("processing_state", {})
+        current_stage = processing_state.get("current_stage", "unknown")
+        stats["by_current_stage"][current_stage] = stats["by_current_stage"].get(current_stage, 0) + 1
+        
+        # Failed stages
+        stage_errors = processing_state.get("stage_error_details", {})
+        for stage, error in stage_errors.items():
+            if stage not in stats["failed_stages"]:
+                stats["failed_stages"][stage] = 0
+            stats["failed_stages"][stage] += 1
+        
+        # Retry counts
+        retry_counts = processing_state.get("retry_counts", {})
+        for stage, count in retry_counts.items():
+            if stage not in stats["retry_counts"]:
+                stats["retry_counts"][stage] = []
+            stats["retry_counts"][stage].append(count)
+        
+        # Processing times
+        total_time = doc.get("total_processing_time")
+        if total_time:
+            total_processing_times.append(total_time)
+    
+    # Calculate averages
+    if total_processing_times:
+        stats["processing_times"]["avg_total"] = sum(total_processing_times) / len(total_processing_times)
+    
+    # Average retry counts
+    for stage, counts in stats["retry_counts"].items():
+        stats["retry_counts"][stage] = {
+            "avg": sum(counts) / len(counts),
+            "max": max(counts),
+            "total_retries": sum(counts)
+        }
+    
+    return stats
+
+# Background task functions
+async def _retry_with_persistent_service(file_path: str, document_id: str, case_id: str, force_restart: bool = False):
+    """Background task to retry document processing with persistent service"""
+    try:
+        upload_service = PersistentUploadService()
+        result = upload_service.upload_document(
+            file_path=file_path,
+            document_id=document_id,
+            case_id=case_id,
+            force_restart=force_restart
+        )
+        logger.info(f"Retry processing completed for document {document_id}: {result['status']}")
+    except Exception as e:
+        logger.error(f"Error in retry processing for document {document_id}: {str(e)}")
+
+async def _retry_from_stage(document_id: str, from_stage: Optional[str], case_id: str):
+    """Background task to retry document processing from specific stage"""
+    try:
+        upload_service = PersistentUploadService()
+        result = upload_service.retry_document_processing(
+            document_id=document_id,
+            from_stage=from_stage,
+            case_id=case_id
+        )
+        logger.info(f"Retry from stage completed for document {document_id}: {result['status']}")
+    except Exception as e:
+        logger.error(f"Error in retry from stage for document {document_id}: {str(e)}")

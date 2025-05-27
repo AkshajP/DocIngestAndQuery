@@ -1,4 +1,5 @@
-// frontend/docllm/app/(main)/admin/page.tsx
+// Enhanced frontend/docllm/app/(main)/admin/page.tsx with stage-based processing
+
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -11,11 +12,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { toast } from '@/components/toast';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { Eye } from 'lucide-react';
+import { Eye, RotateCcw, RefreshCw, AlertCircle, CheckCircle, Clock, XCircle, Settings, Trash2 } from 'lucide-react';
+import { 
+  DocumentMetadata, 
+  ProcessingStage, 
+  ProcessingStageDetails,
+  DocumentProcessingStatus,
+  ProcessingStatistics,
+  STAGE_DISPLAY_CONFIG,
+  STAGE_STATUS_CONFIG,
+  ProcessingStageStatus
+} from '@/types/documents';
 
 export default function AdminPage() {
   const [stats, setStats] = useState<any>(null);
-  const [documents, setDocuments] = useState<any[]>([]);
+  const [processingStats, setProcessingStats] = useState<ProcessingStatistics | null>(null);
+  const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
   const [statusCounts, setStatusCounts] = useState<any>({});
   const [activeTab, setActiveTab] = useState('all');
   const [loading, setLoading] = useState(true);
@@ -23,18 +35,21 @@ export default function AdminPage() {
   const [retrying, setRetrying] = useState<string | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
-  const [selectedDocument, setSelectedDocument] = useState<any>(null);
+  const [showStagesModal, setShowStagesModal] = useState(false);
+  const [selectedDocument, setSelectedDocument] = useState<DocumentMetadata | null>(null);
+  const [selectedDocumentStages, setSelectedDocumentStages] = useState<DocumentProcessingStatus | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
-const [selectedDocumentForViewer, setSelectedDocumentForViewer] = useState<any>(null);
+  const [selectedDocumentForViewer, setSelectedDocumentForViewer] = useState<any>(null);
 
-const handleOpenViewer = (doc: any) => {
-  setSelectedDocumentForViewer(doc);
-  setViewerOpen(true);
-};
+  const handleOpenViewer = (doc: any) => {
+    setSelectedDocumentForViewer(doc);
+    setViewerOpen(true);
+  };
 
   useEffect(() => {
     fetchStats();
     fetchDocuments();
+    fetchProcessingStats();
   }, []);
 
   const fetchStats = async () => {
@@ -47,6 +62,17 @@ const handleOpenViewer = (doc: any) => {
         type: 'error',
         description: 'Failed to load system statistics'
       });
+    }
+  };
+
+  const fetchProcessingStats = async () => {
+    try {
+      const data = await adminApi.getProcessingStatistics();
+      setProcessingStats(data);
+    } catch (error) {
+      console.error('Failed to fetch processing stats:', error);
+      // Set null to indicate loading failed
+      setProcessingStats(null);
     }
   };
 
@@ -83,9 +109,9 @@ const handleOpenViewer = (doc: any) => {
         description: 'Document uploaded successfully. Processing started.'
       });
       setUploadFile(null);
-      // Refresh documents list
       fetchDocuments();
       fetchStats();
+      fetchProcessingStats();
     } catch (error) {
       console.error('Failed to upload document:', error);
       toast({
@@ -97,16 +123,17 @@ const handleOpenViewer = (doc: any) => {
     }
   };
 
-  const handleRetry = async (documentId: string) => {
+  const handleRetry = async (documentId: string, fromStage?: string, forceRestart?: boolean) => {
     setRetrying(documentId);
     try {
-      await adminApi.retryDocument(documentId);
+      await adminApi.retryDocument(documentId, { fromStage, forceRestart });
+      const action = forceRestart ? 'restarted from beginning' : fromStage ? `retried from ${fromStage}` : 'retried';
       toast({
         type: 'success',
-        description: 'Document processing restarted'
+        description: `Document processing ${action}`
       });
-      // Refresh documents list
       fetchDocuments();
+      fetchProcessingStats();
     } catch (error) {
       console.error('Failed to retry document processing:', error);
       toast({
@@ -118,9 +145,62 @@ const handleOpenViewer = (doc: any) => {
     }
   };
 
+  const handleResetToStage = async (documentId: string, stage: string) => {
+    try {
+      await adminApi.resetDocumentToStage(documentId, stage);
+      toast({
+        type: 'success',
+        description: `Document reset to ${stage} stage`
+      });
+      fetchDocuments();
+      // Refresh stages modal if open
+      if (showStagesModal && selectedDocument?.document_id === documentId) {
+        await fetchDocumentStages(documentId);
+      }
+    } catch (error) {
+      console.error('Failed to reset document:', error);
+      toast({
+        type: 'error',
+        description: 'Failed to reset document stage'
+      });
+    }
+  };
+
+  const fetchDocumentStages = async (documentId: string) => {
+    if (!documentId) {
+      console.error('No document ID provided for stage fetch');
+      return;
+    }
+    
+    try {
+      const data = await adminApi.getDocumentStages(documentId);
+      setSelectedDocumentStages(data || null);
+    } catch (error) {
+      console.error('Failed to fetch document stages:', error);
+      setSelectedDocumentStages(null);
+      toast({
+        type: 'error',
+        description: 'Failed to load document stages'
+      });
+    }
+  };
+
+  const handleOpenStagesModal = async (doc: DocumentMetadata) => {
+    if (!doc?.document_id) {
+      toast({
+        type: 'error',
+        description: 'Invalid document selected'
+      });
+      return;
+    }
+    
+    setSelectedDocument(doc);
+    setShowStagesModal(true);
+    await fetchDocumentStages(doc.document_id);
+  };
+
   const formatDate = (dateString: string) => {
     if (!dateString) return 'N/A';
-    
     try {
       const date = new Date(dateString);
       return date.toLocaleString();
@@ -139,19 +219,31 @@ const handleOpenViewer = (doc: any) => {
     }
   };
 
-  // Modal for document details
-  const DocumentDetailsModal = ({ document, isOpen, onClose }: { document: any, isOpen: boolean, onClose: () => void }) => {
+  const getStageBadgeClass = (status: ProcessingStageStatus) => {
+    const config = STAGE_STATUS_CONFIG[status];
+    if (!config) {
+      return "bg-gray-100 text-gray-800 hover:opacity-80"; // fallback for unknown status
+    }
+    return `${config.bgColor} ${config.textColor} hover:opacity-80`;
+  };
+
+  const getStageIcon = (stage: ProcessingStage, status: ProcessingStageStatus) => {
+    const config = STAGE_DISPLAY_CONFIG[stage];
+    if (status === ProcessingStageStatus.COMPLETED) return <CheckCircle className="h-4 w-4 text-green-500" />;
+    if (status === ProcessingStageStatus.FAILED) return <XCircle className="h-4 w-4 text-red-500" />;
+    if (status === ProcessingStageStatus.IN_PROGRESS) return <Clock className="h-4 w-4 text-blue-500" />;
+    return <span className="text-sm">{config?.icon || '❓'}</span>;
+  };
+
+  // Enhanced Document Details Modal with Processing State
+  const DocumentDetailsModal = ({ document, isOpen, onClose }: { document: DocumentMetadata | null, isOpen: boolean, onClose: () => void }) => {
     if (!isOpen || !document) return null;
     
-    // Format content types for display
     const formatContentTypes = (types: Record<string, number>) => {
       if (!types) return "None";
-      return Object.entries(types).map(([type, count]) => (
-        `${type}: ${count}`
-      )).join(", ");
+      return Object.entries(types).map(([type, count]) => `${type}: ${count}`).join(", ");
     };
     
-    // Format raptor levels for display
     const formatRaptorLevels = (levels: number[]) => {
       if (!levels || !levels.length) return "None";
       return levels.join(", ");
@@ -159,13 +251,13 @@ const handleOpenViewer = (doc: any) => {
     
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-        <div className="bg-background p-6 rounded-lg shadow-lg max-w-2xl w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-background p-6 rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold">Document Details</h2>
             <Button variant="ghost" size="sm" onClick={onClose}>×</Button>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
             <div className="space-y-2">
               <div>
                 <h3 className="text-sm font-medium text-muted-foreground">Document ID</h3>
@@ -174,7 +266,7 @@ const handleOpenViewer = (doc: any) => {
               
               <div>
                 <h3 className="text-sm font-medium text-muted-foreground">Filename</h3>
-                <p className="break-all">{document.original_filename}</p>
+                <p className="break-all">{document.document_name}</p>
               </div>
               
               <div>
@@ -182,11 +274,6 @@ const handleOpenViewer = (doc: any) => {
                 <Badge className={getStatusBadgeClass(document.status)}>
                   {document.status}
                 </Badge>
-              </div>
-              
-              <div>
-                <h3 className="text-sm font-medium text-muted-foreground">Processing Date</h3>
-                <p>{formatDate(document.processing_date)}</p>
               </div>
             </div>
             
@@ -202,37 +289,188 @@ const handleOpenViewer = (doc: any) => {
               </div>
               
               <div>
-                <h3 className="text-sm font-medium text-muted-foreground">Images</h3>
-                <p>{document.images_count || 0}</p>
-              </div>
-              
-              <div>
-                <h3 className="text-sm font-medium text-muted-foreground">Content Types</h3>
-                <p>{formatContentTypes(document.content_types)}</p>
+                <h3 className="text-sm font-medium text-muted-foreground">Processing Time</h3>
+                <p>{document.total_processing_time ? `${document.total_processing_time.toFixed(2)}s` : 'N/A'}</p>
               </div>
             </div>
           </div>
+
+          {/* Processing State Information */}
+          {document.processing_state ? (
+            <div className="mb-4">
+              <h3 className="text-lg font-semibold mb-2">Processing State</h3>
+              <div className="bg-muted p-4 rounded-lg">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <span className="text-sm text-muted-foreground">Current Stage:</span>
+                    <p className="font-medium">
+                      {STAGE_DISPLAY_CONFIG[document.processing_state.current_stage]?.label || document.processing_state.current_stage || 'Unknown'}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-sm text-muted-foreground">Completed Stages:</span>
+                    <p className="font-medium">{document.processing_state.completed_stages?.length || 0}</p>
+                  </div>
+                </div>
+                
+                {document.processing_state.stage_error_details && Object.keys(document.processing_state.stage_error_details).length > 0 && (
+                  <div className="mt-3">
+                    <span className="text-sm text-muted-foreground">Recent Errors:</span>
+                    <div className="mt-1 space-y-1">
+                      {Object.entries(document.processing_state.stage_error_details).map(([stage, error]: [string, any]) => (
+                        <div key={stage} className="text-sm text-red-600">
+                          <strong>{stage}:</strong> {error?.error || 'Unknown error'}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-4">
+              <h3 className="text-lg font-semibold mb-2">Processing State</h3>
+              <div className="bg-muted p-4 rounded-lg">
+                <p className="text-muted-foreground">No processing state information available</p>
+              </div>
+            </div>
+          )}
           
-          <div className="mt-4 space-y-2">
-            <div>
-              <h3 className="text-sm font-medium text-muted-foreground">RAPTOR Levels</h3>
-              <p>{formatRaptorLevels(document.raptor_levels)}</p>
-            </div>
-            
-            <div>
-              <h3 className="text-sm font-medium text-muted-foreground">Processing Time</h3>
-              <p>{document.total_processing_time ? `${document.total_processing_time.toFixed(2)}s` : 'N/A'}</p>
-            </div>
-            
-            {document.error_message && (
-              <div>
-                <h3 className="text-sm font-medium text-muted-foreground">Error</h3>
-                <p className="text-red-500">{document.error_message}</p>
+          <div className="flex justify-between">
+            <Button 
+              variant="outline" 
+              onClick={() => handleOpenStagesModal(document)}
+              className="flex items-center gap-2"
+            >
+              <Settings className="h-4 w-4" />
+              View Stages
+            </Button>
+            <Button variant="outline" onClick={onClose}>Close</Button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // New Processing Stages Modal
+  const ProcessingStagesModal = ({ 
+    document, 
+    stages, 
+    isOpen, 
+    onClose 
+  }: { 
+    document: DocumentMetadata | null, 
+    stages: DocumentProcessingStatus | null, 
+    isOpen: boolean, 
+    onClose: () => void 
+  }) => {
+    if (!isOpen || !document || !stages) return null;
+    
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+        <div className="bg-background p-6 rounded-lg shadow-lg max-w-4xl w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold">
+              Processing Stages - {document.document_name || document.document_id}
+            </h2>
+            <Button variant="ghost" size="sm" onClick={onClose}>×</Button>
+          </div>
+          
+          <div className="space-y-4">
+            {stages?.stages && stages.stages.length > 0 ? (
+              stages.stages.map((stage) => {
+                const stageConfig = STAGE_DISPLAY_CONFIG[stage.stage];
+                const statusConfig = STAGE_STATUS_CONFIG[stage.status];
+                
+                return (
+                  <div key={stage.stage} className={`p-4 rounded-lg border ${stage.is_current ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        {getStageIcon(stage.stage, stage.status)}
+                        <div>
+                          <h3 className="font-medium">{stageConfig?.label || stage.stage}</h3>
+                          <p className="text-sm text-muted-foreground">{stageConfig?.description || 'Processing stage'}</p>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center space-x-2">
+                        <Badge className={getStageBadgeClass(stage.status)}>
+                          {statusConfig?.label || stage.status}
+                        </Badge>
+                        
+                        {stage.retry_count > 0 && (
+                          <Badge variant="outline">
+                            {stage.retry_count} retries
+                          </Badge>
+                        )}
+                        
+                        {stage.is_current && stage.status === ProcessingStageStatus.FAILED && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRetry(document.document_id, stage.stage)}
+                            disabled={retrying === document.document_id}
+                            className="flex items-center gap-1"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            Retry
+                          </Button>
+                        )}
+                        
+                        {stage.status === ProcessingStageStatus.COMPLETED && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleResetToStage(document.document_id, stage.stage)}
+                            className="flex items-center gap-1"
+                          >
+                            <RotateCcw className="h-3 w-3" />
+                            Reset
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {stage.error_details && (
+                      <div className="mt-3 p-3 bg-red-50 rounded border border-red-200">
+                        <p className="text-sm text-red-600">
+                          <strong>Error:</strong> {stage.error_details.error}
+                        </p>
+                        <p className="text-xs text-red-500 mt-1">
+                          {formatDate(stage.error_details.timestamp)}
+                        </p>
+                      </div>
+                    )}
+                    
+                    {stage.completion_time && (
+                      <div className="mt-2">
+                        <p className="text-xs text-muted-foreground">
+                          Completed: {formatDate(stage.completion_time)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">
+                No stage information available
               </div>
             )}
           </div>
           
-          <div className="mt-6 flex justify-end">
+          <div className="flex justify-between mt-6">
+            <div className="flex gap-2">
+              <Button 
+                variant="outline"
+                onClick={() => document && handleRetry(document.document_id, undefined, true)}
+                disabled={!document || retrying === document?.document_id}
+                className="flex items-center gap-2"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Restart from Beginning
+              </Button>
+            </div>
             <Button variant="outline" onClick={onClose}>Close</Button>
           </div>
         </div>
@@ -248,6 +486,7 @@ const handleOpenViewer = (doc: any) => {
           onClick={() => {
             fetchStats();
             fetchDocuments(activeTab === 'all' ? undefined : activeTab);
+            fetchProcessingStats();
           }}
         >
           Refresh Data
@@ -259,6 +498,14 @@ const handleOpenViewer = (doc: any) => {
         document={selectedDocument} 
         isOpen={showDetailsModal} 
         onClose={() => setShowDetailsModal(false)}
+      />
+
+      {/* Processing Stages Modal */}
+      <ProcessingStagesModal
+        document={selectedDocument}
+        stages={selectedDocumentStages}
+        isOpen={showStagesModal}
+        onClose={() => setShowStagesModal(false)}
       />
       
       {/* Stats Cards */}
@@ -323,6 +570,90 @@ const handleOpenViewer = (doc: any) => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Processing Statistics */}
+      <Card className="mb-8">
+        <CardHeader>
+          <CardTitle>Processing Statistics</CardTitle>
+          <CardDescription>Stage-wise processing metrics</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {processingStats ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <h3 className="font-medium mb-2">By Current Stage</h3>
+                {processingStats.by_current_stage && Object.keys(processingStats.by_current_stage).length > 0 ? (
+                  Object.entries(processingStats.by_current_stage).map(([stage, count]) => (
+                    <div key={stage} className="flex justify-between text-sm">
+                      <span>{STAGE_DISPLAY_CONFIG[stage as ProcessingStage]?.label || stage}</span>
+                      <span>{count}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-muted-foreground">No data available</div>
+                )}
+              </div>
+              
+              <div>
+                <h3 className="font-medium mb-2">Stage Errors</h3>
+                {processingStats.stage_error_counts && Object.keys(processingStats.stage_error_counts).length > 0 ? (
+                  Object.entries(processingStats.stage_error_counts).map(([stage, count]) => (
+                    <div key={stage} className="flex justify-between text-sm text-red-600">
+                      <span>{STAGE_DISPLAY_CONFIG[stage as ProcessingStage]?.label || stage}</span>
+                      <span>{count}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-muted-foreground">No errors detected</div>
+                )}
+              </div>
+              
+              <div>
+                <h3 className="font-medium mb-2">Retry Statistics</h3>
+                {processingStats.retry_statistics && Object.keys(processingStats.retry_statistics).length > 0 ? (
+                  Object.entries(processingStats.retry_statistics).map(([stage, stats]) => (
+                    <div key={stage} className="text-sm">
+                      <div className="font-medium">{STAGE_DISPLAY_CONFIG[stage as ProcessingStage]?.label || stage}</div>
+                      <div className="text-muted-foreground">
+                        {stats.total_retries} total retries ({stats.avg_retries_per_doc.toFixed(1)} avg)
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-sm text-muted-foreground">No retries recorded</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <h3 className="font-medium mb-2">By Current Stage</h3>
+                <div className="space-y-2">
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                </div>
+              </div>
+              
+              <div>
+                <h3 className="font-medium mb-2">Stage Errors</h3>
+                <div className="space-y-2">
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                </div>
+              </div>
+              
+              <div>
+                <h3 className="font-medium mb-2">Retry Statistics</h3>
+                <div className="space-y-2">
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                  <div className="h-4 bg-muted animate-pulse rounded"></div>
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
       
       {/* System Health */}
       <Card className="mb-8">
@@ -412,22 +743,19 @@ const handleOpenViewer = (doc: any) => {
                   </div>
                 ) : (
                   <>
-                    {/* Move the input outside of the label and add ref */}
                     <input
                       type="file"
                       id="file-upload"
-                      className="hidden" // Change from sr-only to hidden
+                      className="hidden"
                       onChange={(e) => {
                         if (e.target.files && e.target.files[0]) {
                           setUploadFile(e.target.files[0]);
                         }
                       }}
                     />
-                    {/* Use standard button with direct click handler */}
                     <Button 
                       className="mt-2"
                       onClick={() => {
-                        // Directly trigger the file input click
                         document.getElementById('file-upload')?.click();
                       }}
                     >
@@ -443,11 +771,12 @@ const handleOpenViewer = (doc: any) => {
           </div>
         </CardContent>
       </Card>
+
       {/* Documents List Section */}
       <Card>
         <CardHeader>
           <CardTitle>Document Management</CardTitle>
-          <CardDescription>View and manage document processing</CardDescription>
+          <CardDescription>View and manage document processing with stage-level control</CardDescription>
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="all" value={activeTab} onValueChange={handleTabChange}>
@@ -502,16 +831,17 @@ const handleOpenViewer = (doc: any) => {
                         <TableHead className="w-1/6 max-w-[150px]">Document ID</TableHead>
                         <TableHead className="w-1/4 max-w-[200px]">Filename</TableHead>
                         <TableHead className="w-[100px]">Status</TableHead>
+                        <TableHead className="w-[120px]">Current Stage</TableHead>
                         <TableHead className="w-[150px]">Processing Date</TableHead>
-                        <TableHead className="w-[100px] text-center">Chunks Count</TableHead>
+                        <TableHead className="w-[100px] text-center">Chunks</TableHead>
                         <TableHead className="w-[80px] text-center">Pages</TableHead>
-                        <TableHead className="w-[150px]">Actions</TableHead>
+                        <TableHead className="w-[200px]">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {documents.map((doc) => (
                         <TableRow key={doc.document_id}>
-                          <TableCell className="font-mon">
+                          <TableCell className="font-mono">
                             <Button 
                               variant="link" 
                               className="p-0 h-auto font-mono text-xs text-primary hover:underline"
@@ -531,10 +861,6 @@ const handleOpenViewer = (doc: any) => {
                                 rel="noopener noreferrer"
                                 className="flex items-center hover:text-primary"
                                 title="Click to view document"
-                                onClick={(e) => {
-                                  // Add debugging
-                                  console.log(`Opening document: ${doc.document_id}`);
-                                }}
                               >
                                 <svg
                                   xmlns="http://www.w3.org/2000/svg"
@@ -550,8 +876,8 @@ const handleOpenViewer = (doc: any) => {
                                     d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
                                   />
                                 </svg>
-                                <span className="truncate max-w-[200px]" title={doc.original_filename}>
-                                  {doc.original_filename || '(Unnamed)'}
+                                <span className="truncate max-w-[200px]" title={doc.document_name}>
+                                  {doc.document_name || '(Unnamed)'}
                                 </span>
                               </a>
                             </div>
@@ -562,57 +888,71 @@ const handleOpenViewer = (doc: any) => {
                             </Badge>
                           </TableCell>
                           <TableCell>
+                            {doc.processing_state?.current_stage ? (
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs">
+                                  {STAGE_DISPLAY_CONFIG[doc.processing_state.current_stage]?.icon || '❓'}
+                                </span>
+                                <span className="text-sm">
+                                  {STAGE_DISPLAY_CONFIG[doc.processing_state.current_stage]?.label || doc.processing_state.current_stage}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-sm">N/A</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
                             {formatDate(doc.processing_date)}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="text-center">
                             {doc.chunks_count || 0}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="text-center">
                             {doc.page_count || 0}
                           </TableCell>
                           <TableCell>
-                            {(doc.status === 'failed' || doc.status === 'processing') && (
+                            <div className="flex items-center gap-1">
+                              {(doc.status === 'failed' || doc.status === 'processing') && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => handleRetry(doc.document_id)}
+                                  disabled={retrying === doc.document_id}
+                                >
+                                  {retrying === doc.document_id ? (
+                                    <>
+                                      <div className="animate-spin mr-1 h-3 w-3 border-t-2 border-b-2 border-primary rounded-full"></div>
+                                      Retrying...
+                                    </>
+                                  ) : (
+                                    <>
+                                      <RefreshCw className="h-3 w-3 mr-1" />
+                                      Retry
+                                    </>
+                                  )}
+                                </Button>
+                              )}
+                              
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => handleRetry(doc.document_id)}
-                                disabled={retrying === doc.document_id}
+                                onClick={() => handleOpenStagesModal(doc)}
+                                className="flex items-center gap-1"
                               >
-                                {retrying === doc.document_id ? (
-                                  <>
-                                    <div className="animate-spin mr-1 h-3 w-3 border-t-2 border-b-2 border-primary rounded-full"></div>
-                                    Retrying...
-                                  </>
-                                ) : (
-                                  <>
-                                    <svg
-                                      xmlns="http://www.w3.org/2000/svg"
-                                      className="h-3 w-3 mr-1"
-                                      fill="none"
-                                      viewBox="0 0 24 24"
-                                      stroke="currentColor"
-                                    >
-                                      <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                                      />
-                                    </svg>
-                                    Retry
-                                  </>
-                                )}
+                                <Settings className="h-3 w-3" />
+                                Stages
                               </Button>
-                            )}
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="ml-2"
-                              onClick={() => handleOpenViewer(doc)}
-                            >
-                              <Eye className="h-3 w-3 mr-1" />
-                              View Chunks
-                            </Button>
+                              
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleOpenViewer(doc)}
+                                className="flex items-center gap-1"
+                              >
+                                <Eye className="h-3 w-3" />
+                                Chunks
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}
@@ -624,14 +964,15 @@ const handleOpenViewer = (doc: any) => {
           </Tabs>
         </CardContent>
       </Card>
+      
       {selectedDocumentForViewer && (
-                              <DocumentViewerModal
-                                isOpen={viewerOpen}
-                                onClose={() => setViewerOpen(false)}
-                                documentId={selectedDocumentForViewer.document_id}
-                                documentName={selectedDocumentForViewer.original_filename || 'Unnamed Document'}
-                              />
-                            )}
+        <DocumentViewerModal
+          isOpen={viewerOpen}
+          onClose={() => setViewerOpen(false)}
+          documentId={selectedDocumentForViewer.document_id}
+          documentName={selectedDocumentForViewer.document_name || 'Unnamed Document'}
+        />
+      )}
     </div>
   );
 }
