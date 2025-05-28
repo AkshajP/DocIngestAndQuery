@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, B
 from typing import List, Dict, Any, Optional
 import os
 import time
+import json
 from datetime import datetime
 from fastapi.responses import FileResponse
 from api.models.admin_models import SystemStatsResponse, DocumentStats, SystemHealthStats, SystemStorageStats, QueryStats
@@ -164,42 +165,88 @@ async def upload_new_document(
 async def retry_document_processing(
     document_id: str,
     background_tasks: BackgroundTasks,
+    from_stage: Optional[str] = Query(None, description="Stage to retry from (optional)"),
+    force_restart: bool = Query(False, description="Force restart from beginning"),
     admin_user: str = Depends(get_admin_user)
 ):
-    """Retry processing a failed document."""
+    """Retry processing a document from a specific stage or current failed stage."""
     doc_repository = DocumentMetadataRepository()
     document = doc_repository.get_document(document_id)
     
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    if document.get("status") not in ["failed", "processing"]:
-        raise HTTPException(status_code=400, detail="Document is not in a failed or stuck processing state")
+    # Check for concurrent processing
+    if document.get("status") == "processing":
+        # Check if there's an active processing lock
+        upload_service = PersistentUploadService()
+        doc_dir = os.path.join(upload_service.config.storage.storage_dir, document_id)
+        lock_file = os.path.join(doc_dir, "stages", "processing.lock")
+        
+        if upload_service.storage_adapter.file_exists(lock_file):
+            try:
+                lock_content = upload_service.storage_adapter.read_file(lock_file)
+                if lock_content:
+                    lock_data = json.loads(lock_content)
+                    locked_at = datetime.fromisoformat(lock_data["locked_at"])
+                    if (datetime.now() - locked_at).total_seconds() < 300:  # 5 minutes
+                        raise HTTPException(
+                            status_code=409, 
+                            detail="Document is currently being processed. Please wait before retrying."
+                        )
+            except:
+                pass  # If we can't read lock, proceed
+    
+    # Validate stage if provided
+    if from_stage:
+        valid_stages = [stage.value for stage in ProcessingStage]
+        if from_stage not in valid_stages:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid stage. Valid stages: {', '.join(valid_stages)}"
+            )
     
     # Get original file path
-    file_path = document.get("original_file_path")
+    file_path = document.get("stored_file_path") or document.get("original_file_path")
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Original file not found")
     
-    # Update document status to pending
-    doc_repository.update_document(document_id, {
-        "status": "pending",
+    # Update document status to processing with retry information
+    retry_metadata = {
+        "status": "processing",
+        "retry_time": datetime.now().isoformat(),
         "retry_count": document.get("retry_count", 0) + 1,
-        "retry_time": datetime.now().isoformat()
-    })
+        "retry_from_stage": from_stage,
+        "force_restart": force_restart
+    }
+    
+    doc_repository.update_document(document_id, retry_metadata)
     
     # Queue document processing in background
-    background_tasks.add_task(
-        upload_document,
-        file_path=file_path,
-        document_id=document_id,
-        case_id=document.get("case_id", "default")
-    )
+    if force_restart:
+        # Use the persistent upload service with force restart
+        background_tasks.add_task(
+            _retry_with_persistent_service,
+            file_path=file_path,
+            document_id=document_id,
+            case_id=document.get("case_id", "default"),
+            force_restart=True
+        )
+    else:
+        # Use retry functionality
+        background_tasks.add_task(
+            _retry_from_stage,
+            document_id=document_id,
+            from_stage=from_stage,
+            case_id=document.get("case_id", "default")
+        )
     
     return {
-        "status": "pending",
-        "message": "Document processing restarted",
-        "document_id": document_id
+        "status": "processing",
+        "message": f"Document processing {'restarted' if force_restart else 'retried'}",
+        "document_id": document_id,
+        "from_stage": from_stage if not force_restart else "upload",
+        "retry_count": retry_metadata["retry_count"]
     }
     
 @router.get("/documents/{document_id}/chunks")
@@ -308,68 +355,6 @@ async def get_document_processing_status(
     
     return result
 
-@router.post("/documents/{document_id}/retry")
-async def retry_document_processing(
-    document_id: str,
-    background_tasks: BackgroundTasks,
-    from_stage: Optional[str] = Query(None, description="Stage to retry from (optional)"),
-    force_restart: bool = Query(False, description="Force restart from beginning"),
-    admin_user: str = Depends(get_admin_user)
-):
-    """Retry processing a document from a specific stage or current failed stage."""
-    doc_repository = DocumentMetadataRepository()
-    document = doc_repository.get_document(document_id)
-    
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Validate stage if provided
-    if from_stage:
-        valid_stages = [stage.value for stage in ProcessingStage]
-        if from_stage not in valid_stages:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid stage. Valid stages: {', '.join(valid_stages)}"
-            )
-    
-    # Get original file path
-    file_path = document.get("stored_file_path") or document.get("original_file_path")
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Original file not found")
-    
-    # Update document status to processing
-    doc_repository.update_document(document_id, {
-        "status": "processing",
-        "retry_time": datetime.now().isoformat(),
-        "retry_count": document.get("retry_count", 0) + 1
-    })
-    
-    # Queue document processing in background
-    if force_restart:
-        # Use the persistent upload service with force restart
-        background_tasks.add_task(
-            _retry_with_persistent_service,
-            file_path=file_path,
-            document_id=document_id,
-            case_id=document.get("case_id", "default"),
-            force_restart=True
-        )
-    else:
-        # Use retry functionality
-        background_tasks.add_task(
-            _retry_from_stage,
-            document_id=document_id,
-            from_stage=from_stage,
-            case_id=document.get("case_id", "default")
-        )
-    
-    return {
-        "status": "processing",
-        "message": f"Document processing {'restarted' if force_restart else 'retried'}",
-        "document_id": document_id,
-        "from_stage": from_stage if not force_restart else "upload"
-    }
-
 @router.get("/documents/{document_id}/stages")
 async def get_document_stages(
     document_id: str,
@@ -432,6 +417,26 @@ async def reset_document_to_stage(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # Check for concurrent processing
+    if document.get("status") == "processing":
+        upload_service = PersistentUploadService()
+        doc_dir = os.path.join(upload_service.config.storage.storage_dir, document_id)
+        lock_file = os.path.join(doc_dir, "stages", "processing.lock")
+        
+        if upload_service.storage_adapter.file_exists(lock_file):
+            try:
+                lock_content = upload_service.storage_adapter.read_file(lock_file)
+                if lock_content:
+                    lock_data = json.loads(lock_content)
+                    locked_at = datetime.fromisoformat(lock_data["locked_at"])
+                    if (datetime.now() - locked_at).total_seconds() < 300:  # 5 minutes
+                        raise HTTPException(
+                            status_code=409, 
+                            detail="Document is currently being processed. Cannot reset stage."
+                        )
+            except:
+                pass  # If we can't read lock, proceed
+    
     # Initialize upload service and reset
     upload_service = PersistentUploadService()
     
@@ -444,7 +449,8 @@ async def reset_document_to_stage(
         state_manager = ProcessingStateManager(
             document_id=document_id,
             storage_adapter=upload_service.storage_adapter,
-            doc_dir=doc_dir
+            doc_dir=doc_dir,
+            doc_repository=doc_repository
         )
         
         # Reset to specified stage
@@ -503,7 +509,8 @@ async def cleanup_stage_data(
         state_manager = ProcessingStateManager(
             document_id=document_id,
             storage_adapter=upload_service.storage_adapter,
-            doc_dir=doc_dir
+            doc_dir=doc_dir,
+            doc_repository=doc_repository
         )
         
         # Clean up stage data
@@ -529,65 +536,82 @@ async def get_processing_statistics(
 ):
     """Get statistics about document processing stages across all documents."""
     doc_repository = DocumentMetadataRepository()
-    all_documents = doc_repository.list_documents()
     
-    stats = {
-        "total_documents": len(all_documents),
-        "by_status": {},
-        "by_current_stage": {},
-        "failed_stages": {},
-        "retry_counts": {},
-        "processing_times": {
-            "avg_total": 0,
-            "avg_by_stage": {}
+    try:
+        # Use the enhanced statistics method from repository
+        detailed_stats = doc_repository.get_processing_statistics_detailed()
+        
+        return {
+            "total_documents": detailed_stats["total_documents"],
+            "by_status": detailed_stats["by_status"],
+            "by_current_stage": detailed_stats["by_current_stage"],
+            "stage_error_counts": detailed_stats["stage_error_counts"],
+            "retry_statistics": detailed_stats["retry_statistics"],
+            "last_updated": detailed_stats["last_updated"]
         }
-    }
-    
-    # Collect statistics
-    total_processing_times = []
-    stage_processing_times = {}
-    
-    for doc in all_documents:
-        status = doc.get("status", "unknown")
-        stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
+    except Exception as e:
+        logger.error(f"Error getting processing statistics: {str(e)}")
+        # Fallback to basic statistics
+        all_documents = doc_repository.list_documents()
         
-        # Get processing state if available
-        processing_state = doc.get("processing_state", {})
-        current_stage = processing_state.get("current_stage", "unknown")
-        stats["by_current_stage"][current_stage] = stats["by_current_stage"].get(current_stage, 0) + 1
-        
-        # Failed stages
-        stage_errors = processing_state.get("stage_error_details", {})
-        for stage, error in stage_errors.items():
-            if stage not in stats["failed_stages"]:
-                stats["failed_stages"][stage] = 0
-            stats["failed_stages"][stage] += 1
-        
-        # Retry counts
-        retry_counts = processing_state.get("retry_counts", {})
-        for stage, count in retry_counts.items():
-            if stage not in stats["retry_counts"]:
-                stats["retry_counts"][stage] = []
-            stats["retry_counts"][stage].append(count)
-        
-        # Processing times
-        total_time = doc.get("total_processing_time")
-        if total_time:
-            total_processing_times.append(total_time)
-    
-    # Calculate averages
-    if total_processing_times:
-        stats["processing_times"]["avg_total"] = sum(total_processing_times) / len(total_processing_times)
-    
-    # Average retry counts
-    for stage, counts in stats["retry_counts"].items():
-        stats["retry_counts"][stage] = {
-            "avg": sum(counts) / len(counts),
-            "max": max(counts),
-            "total_retries": sum(counts)
+        stats = {
+            "total_documents": len(all_documents),
+            "by_status": {},
+            "by_current_stage": {},
+            "stage_error_counts": {},
+            "retry_statistics": {},
+            "processing_times": {
+                "avg_total": 0,
+                "avg_by_stage": {}
+            }
         }
-    
-    return stats
+        
+        # Collect basic statistics
+        total_processing_times = []
+        stage_processing_times = {}
+        
+        for doc in all_documents:
+            status = doc.get("status", "unknown")
+            stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
+            
+            # Get processing state if available
+            processing_state = doc.get("processing_state", {})
+            current_stage = processing_state.get("current_stage", "unknown")
+            stats["by_current_stage"][current_stage] = stats["by_current_stage"].get(current_stage, 0) + 1
+            
+            # Failed stages
+            stage_errors = processing_state.get("stage_error_details", {})
+            for stage, error in stage_errors.items():
+                if stage not in stats["stage_error_counts"]:
+                    stats["stage_error_counts"][stage] = 0
+                stats["stage_error_counts"][stage] += 1
+            
+            # Retry counts
+            retry_counts = processing_state.get("retry_counts", {})
+            for stage, count in retry_counts.items():
+                if stage not in stats["retry_statistics"]:
+                    stats["retry_statistics"][stage] = []
+                stats["retry_statistics"][stage].append(count)
+            
+            # Processing times
+            total_time = doc.get("total_processing_time")
+            if total_time:
+                total_processing_times.append(total_time)
+        
+        # Calculate averages
+        if total_processing_times:
+            stats["processing_times"]["avg_total"] = sum(total_processing_times) / len(total_processing_times)
+        
+        # Average retry counts
+        for stage, counts in stats["retry_statistics"].items():
+            stats["retry_statistics"][stage] = {
+                "avg_retries_per_doc": sum(counts) / len(counts),
+                "total_retries": sum(counts),
+                "max_retries": max(counts),
+                "documents_with_retries": len(counts)
+            }
+        
+        return stats
 
 # Background task functions
 async def _retry_with_persistent_service(file_path: str, document_id: str, case_id: str, force_restart: bool = False):

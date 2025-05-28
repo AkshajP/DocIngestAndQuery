@@ -3,7 +3,7 @@ import time
 import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
-
+from datetime import datetime
 from services.document.storage import StorageAdapter
 from services.pdf.extractor import PDFExtractor
 from services.document.chunker import Chunker
@@ -155,58 +155,97 @@ class ChunkingProcessor(StageProcessor):
     def can_execute(self, state_manager: ProcessingStateManager, context: Dict[str, Any]) -> bool:
         """Check if chunking can be executed"""
         current_stage = state_manager.get_current_stage()
+        
+        # If we're still in extraction stage but it's complete, advance to chunking
+        if (current_stage == ProcessingStage.EXTRACTION.value and 
+            state_manager.is_stage_complete(ProcessingStage.EXTRACTION.value)):
+            # Advance to chunking stage
+            state_manager.processing_state["current_stage"] = ProcessingStage.CHUNKING.value
+            state_manager._save_processing_state()
+            logger.info(f"Advanced document {state_manager.document_id} from extraction to chunking stage")
+            return True
+        
+        # If already in chunking stage, we can execute
         return current_stage == ProcessingStage.CHUNKING.value
-    
+
     def validate_dependencies(self, state_manager: ProcessingStateManager, context: Dict[str, Any]) -> bool:
         """Validate that extraction is completed"""
         if not state_manager.is_stage_complete(ProcessingStage.EXTRACTION.value):
             logger.error(f"Extraction stage not completed for document {state_manager.document_id}")
             return False
         
-        # Check if extraction data exists
+        # Check if extraction data exists and is valid
         extraction_data = state_manager.load_stage_data(ProcessingStage.EXTRACTION.value, "extraction_result")
-        if not extraction_data or not extraction_data.get("content_list"):
+        if not extraction_data:
             logger.error(f"No extraction data found for document {state_manager.document_id}")
             return False
         
+        # Validate content_list structure
+        content_list = extraction_data.get("content_list")
+        if not content_list or not isinstance(content_list, list):
+            logger.error(f"Invalid or empty content_list for document {state_manager.document_id}")
+            return False
+        
+        # Check if content_list has valid items
+        valid_items = [item for item in content_list if item.get("content") or item.get("text")]
+        if not valid_items:
+            logger.error(f"No valid content items found for document {state_manager.document_id}")
+            return False
+        
+        logger.info(f"Validation passed: found {len(valid_items)} valid content items")
         return True
-    
+
     def execute(self, state_manager: ProcessingStateManager, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute chunking"""
+        """Execute chunking with improved error handling"""
         start_time = time.time()
         
         try:
-            # Load extraction results
+            # Load extraction results with validation
             extraction_data = state_manager.load_stage_data(ProcessingStage.EXTRACTION.value, "extraction_result")
             if not extraction_data:
-                raise Exception("No extraction data found")
+                raise ValueError("No extraction data found")
             
-            content_list = extraction_data["content_list"]
+            content_list = extraction_data.get("content_list", [])
+            if not content_list:
+                raise ValueError("Content list is empty")
             
-            logger.info(f"Starting chunking for document {state_manager.document_id}")
+            logger.info(f"Starting chunking for document {state_manager.document_id} with {len(content_list)} content items")
             
             # Process content using the chunker
             chunks = self.chunker.chunk_content(content_list)
             
             if not chunks:
-                raise Exception("No chunks created from document content")
+                raise ValueError("No chunks created from document content")
+            
+            # Validate chunk structure
+            valid_chunks = []
+            for i, chunk in enumerate(chunks):
+                if not chunk.get("content"):
+                    logger.warning(f"Chunk {i} has no content, skipping")
+                    continue
+                if not chunk.get("id"):
+                    chunk["id"] = f"chunk_{state_manager.document_id}_{i}"
+                valid_chunks.append(chunk)
+            
+            if not valid_chunks:
+                raise ValueError("No valid chunks created")
             
             # Count content types
             content_types = {}
-            for chunk in chunks:
+            for chunk in valid_chunks:
                 chunk_type = chunk.get("metadata", {}).get("type", "unknown")
-                if chunk_type not in content_types:
-                    content_types[chunk_type] = 0
-                content_types[chunk_type] += 1
+                content_types[chunk_type] = content_types.get(chunk_type, 0) + 1
             
             # Save chunking results
             chunking_data = {
-                "chunks": chunks,
-                "chunks_count": len(chunks),
+                "chunks": valid_chunks,
+                "chunks_count": len(valid_chunks),
                 "content_types": content_types,
                 "chunking_metadata": {
                     "max_chunk_size": self.chunker.max_chunk_size,
-                    "overlap_size": self.chunker.overlap_size
+                    "overlap_size": self.chunker.overlap_size,
+                    "original_content_items": len(content_list),
+                    "processing_timestamp": datetime.now().isoformat()
                 }
             }
             
@@ -217,19 +256,19 @@ class ChunkingProcessor(StageProcessor):
             )
             
             if not success:
-                raise Exception("Failed to save chunking results")
+                raise RuntimeError("Failed to save chunking results to storage")
             
             # Mark stage as complete
             state_manager.mark_stage_complete(ProcessingStage.CHUNKING.value)
             
             processing_time = time.time() - start_time
             
-            logger.info(f"Chunking completed for document {state_manager.document_id} in {processing_time:.2f}s")
+            logger.info(f"Chunking completed for document {state_manager.document_id} in {processing_time:.2f}s: {len(valid_chunks)} chunks created")
             
             return {
                 "status": "success",
-                "chunks": chunks,
-                "chunks_count": len(chunks),
+                "chunks": valid_chunks,
+                "chunks_count": len(valid_chunks),
                 "content_types": content_types,
                 "processing_time": processing_time
             }

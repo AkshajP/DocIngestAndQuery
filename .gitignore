@@ -1,5 +1,6 @@
 __pycache__/
 document_store/
+_document_store/
 images/
 volumes/
 !db/document_store/

@@ -2,6 +2,7 @@ import os
 import json
 import pickle
 import logging
+import time
 from typing import Any, Optional, Dict, List
 from datetime import datetime
 from enum import Enum
@@ -26,7 +27,7 @@ class ProcessingStateManager:
     Handles persistence of intermediate results and stage tracking.
     """
     
-    def __init__(self, document_id: str, storage_adapter: StorageAdapter, doc_dir: str):
+    def __init__(self, document_id: str, storage_adapter: StorageAdapter, doc_dir: str, doc_repository=None):
         """
         Initialize the processing state manager.
         
@@ -34,10 +35,12 @@ class ProcessingStateManager:
             document_id: Document ID
             storage_adapter: Storage adapter for file operations
             doc_dir: Document storage directory
+            doc_repository: Optional document repository for coordination
         """
         self.document_id = document_id
         self.storage_adapter = storage_adapter
         self.doc_dir = doc_dir
+        self.doc_repository = doc_repository
         self.stages_dir = os.path.join(doc_dir, "stages")
         
         # Ensure stages directory exists
@@ -85,6 +88,77 @@ class ProcessingStateManager:
             logger.error(f"Error saving processing state for {self.document_id}: {str(e)}")
             return False
     
+    def _acquire_state_lock(self, timeout_seconds: int = 30) -> bool:
+        """
+        Acquire a lock for state modification operations.
+        
+        Args:
+            timeout_seconds: Maximum time to wait for lock acquisition
+            
+        Returns:
+            True if lock acquired, False otherwise
+        """
+        lock_file = os.path.join(self.stages_dir, "state.lock")
+        start_time = time.time()
+        
+        while (time.time() - start_time) < timeout_seconds:
+            try:
+                # Check if lock file exists
+                if not self.storage_adapter.file_exists(lock_file):
+                    # Create lock file
+                    lock_data = {
+                        "locked_at": datetime.now().isoformat(),
+                        "locked_by": f"process_{os.getpid()}",
+                        "document_id": self.document_id
+                    }
+                    
+                    success = self.storage_adapter.write_file(
+                        json.dumps(lock_data), 
+                        lock_file
+                    )
+                    
+                    if success:
+                        logger.debug(f"Acquired state lock for document {self.document_id}")
+                        return True
+                else:
+                    # Check if existing lock is stale (older than 5 minutes)
+                    try:
+                        lock_content = self.storage_adapter.read_file(lock_file)
+                        if lock_content:
+                            lock_data = json.loads(lock_content)
+                            locked_at = datetime.fromisoformat(lock_data["locked_at"])
+                            
+                            # If lock is older than 5 minutes, consider it stale
+                            if (datetime.now() - locked_at).total_seconds() > 300:
+                                logger.warning(f"Removing stale lock for document {self.document_id}")
+                                self.storage_adapter.delete_file(lock_file)
+                                continue  # Try to acquire lock again
+                    except Exception as e:
+                        logger.warning(f"Error checking lock staleness: {str(e)}")
+                        # If we can't read the lock, try to remove it
+                        self.storage_adapter.delete_file(lock_file)
+                        continue
+                
+                # Wait a bit before retrying
+                time.sleep(0.1)
+                
+            except Exception as e:
+                logger.error(f"Error acquiring lock for document {self.document_id}: {str(e)}")
+                time.sleep(0.1)
+        
+        logger.error(f"Could not acquire lock for document {self.document_id} within {timeout_seconds} seconds")
+        return False
+    
+    def _release_state_lock(self):
+        """Release the state modification lock"""
+        try:
+            lock_file = os.path.join(self.stages_dir, "state.lock")
+            if self.storage_adapter.file_exists(lock_file):
+                self.storage_adapter.delete_file(lock_file)
+                logger.debug(f"Released state lock for document {self.document_id}")
+        except Exception as e:
+            logger.warning(f"Error releasing lock for document {self.document_id}: {str(e)}")
+    
     def get_current_stage(self) -> str:
         """Get the current processing stage"""
         return self.processing_state.get("current_stage", ProcessingStage.UPLOAD.value)
@@ -130,14 +204,14 @@ class ProcessingStateManager:
             success = self.storage_adapter.write_file(content, file_path)
             
             if success:
-                # Update stage data paths
+                # Update stage data paths without locking (this is just metadata)
                 if "stage_data_paths" not in self.processing_state:
                     self.processing_state["stage_data_paths"] = {}
                 if stage not in self.processing_state["stage_data_paths"]:
                     self.processing_state["stage_data_paths"][stage] = {}
                 
                 self.processing_state["stage_data_paths"][stage][filename] = file_path
-                self._save_processing_state()
+                self._save_processing_state()  # Save state updates
                 
                 logger.info(f"Saved {stage} data ({filename}) for document {self.document_id}")
             
@@ -243,6 +317,12 @@ class ProcessingStateManager:
         Returns:
             True if successful, False otherwise
         """
+        # Try to acquire lock with longer timeout for critical operations
+        if not self._acquire_state_lock(timeout_seconds=60):
+            logger.error(f"Could not acquire lock for document {self.document_id}")
+            # Try to proceed without lock as fallback (but log the issue)
+            logger.warning(f"Proceeding without lock for stage completion of {stage} in document {self.document_id}")
+        
         try:
             # Add to completed stages if not already there
             completed_stages = self.processing_state.get("completed_stages", [])
@@ -266,13 +346,28 @@ class ProcessingStateManager:
             
             success = self._save_processing_state()
             
+            # Sync with document repository if available (without requiring lock)
+            if success and self.doc_repository:
+                try:
+                    self.doc_repository.update_processing_state(
+                        self.document_id, 
+                        self.processing_state
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to sync with document repository: {str(e)}")
+                    # Don't fail the stage completion just because repo sync failed
+            
             if success:
                 logger.info(f"Marked stage '{stage}' as complete for document {self.document_id}")
             
             return success
+            
         except Exception as e:
             logger.error(f"Error marking stage complete for {self.document_id}: {str(e)}")
             return False
+        finally:
+            # Always try to release the lock
+            self._release_state_lock()
     
     def mark_stage_failed(self, stage: str, error_message: str) -> bool:
         """
@@ -285,6 +380,10 @@ class ProcessingStateManager:
         Returns:
             True if successful, False otherwise
         """
+        # Try to acquire lock
+        if not self._acquire_state_lock(timeout_seconds=30):
+            logger.warning(f"Could not acquire lock for marking stage failed, proceeding anyway for document {self.document_id}")
+        
         try:
             # Update error details
             error_details = self.processing_state.get("stage_error_details", {})
@@ -301,13 +400,26 @@ class ProcessingStateManager:
             
             success = self._save_processing_state()
             
+            # Sync with document repository if available
+            if success and self.doc_repository:
+                try:
+                    self.doc_repository.update_processing_state(
+                        self.document_id, 
+                        self.processing_state
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to sync failed stage with document repository: {str(e)}")
+            
             if success:
                 logger.error(f"Marked stage '{stage}' as failed for document {self.document_id}: {error_message}")
             
             return success
+            
         except Exception as e:
             logger.error(f"Error marking stage failed for {self.document_id}: {str(e)}")
             return False
+        finally:
+            self._release_state_lock()
     
     def reset_to_stage(self, target_stage: str) -> bool:
         """
@@ -319,6 +431,10 @@ class ProcessingStateManager:
         Returns:
             True if successful, False otherwise
         """
+        # Try to acquire lock
+        if not self._acquire_state_lock(timeout_seconds=30):
+            logger.warning(f"Could not acquire lock for stage reset, proceeding anyway for document {self.document_id}")
+        
         try:
             stage_order = [stage.value for stage in ProcessingStage]
             target_index = stage_order.index(target_stage)
@@ -346,13 +462,26 @@ class ProcessingStateManager:
             
             success = self._save_processing_state()
             
+            # Sync with document repository if available
+            if success and self.doc_repository:
+                try:
+                    self.doc_repository.update_processing_state(
+                        self.document_id, 
+                        self.processing_state
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to sync stage reset with document repository: {str(e)}")
+            
             if success:
                 logger.info(f"Reset document {self.document_id} to stage '{target_stage}'")
             
             return success
+            
         except Exception as e:
             logger.error(f"Error resetting to stage for {self.document_id}: {str(e)}")
             return False
+        finally:
+            self._release_state_lock()
     
     def get_stage_status(self) -> Dict[str, Any]:
         """Get comprehensive status of all stages"""

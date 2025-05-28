@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -89,6 +90,30 @@ class PersistentUploadService:
             document_id = f"doc_{timestamp}_{safe_name}"
         
         try:
+            # Check if document is already being processed by another operation
+            existing_doc = self.doc_repository.get_document(document_id)
+            if existing_doc and existing_doc.get("status") == "processing" and not force_restart:
+                # Check if there's an active lock file
+                doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
+                lock_file = os.path.join(doc_dir, "stages", "processing.lock")
+                
+                if self.storage_adapter.file_exists(lock_file):
+                    # Check if lock is recent (within last 5 minutes)
+                    try:
+                        lock_content = self.storage_adapter.read_file(lock_file)
+                        if lock_content:
+                            lock_data = json.loads(lock_content)
+                            locked_at = datetime.fromisoformat(lock_data["locked_at"])
+                            if (datetime.now() - locked_at).total_seconds() < 300:  # 5 minutes
+                                return {
+                                    "status": "error",
+                                    "document_id": document_id,
+                                    "error": "Document is already being processed by another operation",
+                                    "processing_time": 0
+                                }
+                    except:
+                        pass  # If we can't read the lock, proceed
+            
             # Initialize or load existing processing state
             result = self._initialize_document_processing(
                 document_id, case_id, file_path, metadata, force_restart
@@ -100,17 +125,23 @@ class PersistentUploadService:
             doc_dir = result["doc_dir"]
             stored_file_path = result["stored_file_path"]
             
-            # Initialize processing state manager
+            # Initialize processing state manager with document repository for coordination
             state_manager = ProcessingStateManager(
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
-                doc_dir=doc_dir
+                doc_dir=doc_dir,
+                doc_repository=self.doc_repository
             )
             
             # Reset processing if force_restart is True
             if force_restart:
                 state_manager.reset_to_stage(ProcessingStage.UPLOAD.value)
+                # Mark upload as complete again after reset since file is already stored
+                state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value)
                 logger.info(f"Force restarting processing for document {document_id}")
+            
+            # Create processing lock
+            self._create_processing_lock(doc_dir)
             
             # Create processing context
             context = {
@@ -153,6 +184,9 @@ class PersistentUploadService:
             
             self.doc_repository.update_document(document_id, final_metadata)
             
+            # Remove processing lock
+            self._remove_processing_lock(doc_dir)
+            
             # Prepare response
             response = {
                 "status": pipeline_result["status"],
@@ -180,6 +214,13 @@ class PersistentUploadService:
             
         except Exception as e:
             logger.error(f"Error processing document {document_id}: {str(e)}")
+            
+            # Remove processing lock on error
+            try:
+                doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
+                self._remove_processing_lock(doc_dir)
+            except:
+                pass
             
             # Update document with error status
             self.doc_repository.update_document(document_id, {
@@ -214,6 +255,32 @@ class PersistentUploadService:
             Dictionary with retry status and information
         """
         try:
+            # Check for concurrent operations
+            existing_doc = self.doc_repository.get_document(document_id)
+            if not existing_doc:
+                return {
+                    "status": "error",
+                    "error": "Document not found"
+                }
+            
+            if existing_doc.get("status") == "processing":
+                doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
+                lock_file = os.path.join(doc_dir, "stages", "processing.lock")
+                
+                if self.storage_adapter.file_exists(lock_file):
+                    try:
+                        lock_content = self.storage_adapter.read_file(lock_file)
+                        if lock_content:
+                            lock_data = json.loads(lock_content)
+                            locked_at = datetime.fromisoformat(lock_data["locked_at"])
+                            if (datetime.now() - locked_at).total_seconds() < 300:  # 5 minutes
+                                return {
+                                    "status": "error",
+                                    "error": "Document is already being processed. Please wait."
+                                }
+                    except:
+                        pass  # If we can't read lock, proceed
+            
             # Get document metadata
             document = self.doc_repository.get_document(document_id)
             if not document:
@@ -239,11 +306,12 @@ class PersistentUploadService:
             
             doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
             
-            # Initialize processing state manager
+            # Initialize processing state manager with coordination
             state_manager = ProcessingStateManager(
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
-                doc_dir=doc_dir
+                doc_dir=doc_dir,
+                doc_repository=self.doc_repository
             )
             
             # Reset to specified stage if provided
@@ -254,7 +322,15 @@ class PersistentUploadService:
                         "error": f"Invalid stage: {from_stage}"
                     }
                 state_manager.reset_to_stage(from_stage)
+                
+                # If resetting to upload, mark it as complete since file is already stored
+                if from_stage == ProcessingStage.UPLOAD.value:
+                    state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value)
+                    
                 logger.info(f"Reset document {document_id} to stage {from_stage}")
+            
+            # Create processing lock
+            self._create_processing_lock(doc_dir)
             
             # Update document status to processing
             self.doc_repository.update_document(document_id, {
@@ -294,6 +370,9 @@ class PersistentUploadService:
                     "processing_state": state_manager.get_stage_status()
                 })
             
+            # Remove processing lock
+            self._remove_processing_lock(doc_dir)
+            
             return {
                 "status": pipeline_result["status"],
                 "document_id": document_id,
@@ -303,6 +382,14 @@ class PersistentUploadService:
             
         except Exception as e:
             logger.error(f"Error retrying document {document_id}: {str(e)}")
+            
+            # Remove processing lock on error
+            try:
+                doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
+                self._remove_processing_lock(doc_dir)
+            except:
+                pass
+                
             return {
                 "status": "error",
                 "document_id": document_id,
@@ -326,7 +413,8 @@ class PersistentUploadService:
             state_manager = ProcessingStateManager(
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
-                doc_dir=doc_dir
+                doc_dir=doc_dir,
+                doc_repository=self.doc_repository
             )
             
             # Get comprehensive status
@@ -366,28 +454,56 @@ class PersistentUploadService:
             # Check if document already exists in registry
             existing_doc = self.doc_repository.get_document(document_id)
             
+            storage_success = False
+            stored_file_path = file_path  # Default fallback
+            
             if existing_doc and not force_restart:
                 # Document exists, return existing paths
                 stored_file_path = existing_doc.get("stored_file_path", target_path)
                 logger.info(f"Document {document_id} already exists, using existing setup")
-                return {
-                    "status": "success",
-                    "doc_dir": doc_dir,
-                    "stored_file_path": stored_file_path
-                }
+                
+                # Verify file exists
+                if self.storage_adapter.file_exists(stored_file_path):
+                    storage_success = True
+                else:
+                    logger.warning(f"Stored file not found at {stored_file_path}, will re-store")
             
-            # Store the original file
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
-            
-            storage_success = self.storage_adapter.write_file(file_content, target_path)
-            
+            # Store the original file if needed
             if not storage_success:
-                logger.warning(f"Failed to save original PDF to {target_path}")
-                stored_file_path = file_path  # Fall back to original path
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                
+                storage_success = self.storage_adapter.write_file(file_content, target_path)
+                
+                if not storage_success:
+                    logger.warning(f"Failed to save original PDF to {target_path}")
+                    stored_file_path = file_path  # Fall back to original path
+                else:
+                    logger.info(f"Successfully saved original PDF to {target_path}")
+                    stored_file_path = target_path
+            
+            # Initialize processing state manager and mark upload complete
+            temp_state_manager = ProcessingStateManager(
+                document_id=document_id,
+                storage_adapter=self.storage_adapter,
+                doc_dir=doc_dir,
+                doc_repository=self.doc_repository
+            )
+            
+            # Mark upload stage as complete if file exists (either stored or original)
+            file_exists = (storage_success or 
+                          self.storage_adapter.file_exists(stored_file_path) or 
+                          os.path.exists(stored_file_path))
+                          
+            if file_exists:
+                temp_state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value)
+                logger.info(f"Marked upload stage as complete for document {document_id}")
             else:
-                logger.info(f"Successfully saved original PDF to {target_path}")
-                stored_file_path = target_path
+                logger.error(f"Cannot mark upload complete - file not accessible: {stored_file_path}")
+                return {
+                    "status": "error",
+                    "error": f"File not accessible after upload: {stored_file_path}"
+                }
             
             # Initialize or update document metadata
             doc_metadata = {
@@ -399,7 +515,8 @@ class PersistentUploadService:
                 "file_type": os.path.splitext(file_path)[1].lower()[1:],
                 "processing_start_time": datetime.now().isoformat(),
                 "status": "processing",
-                "user_metadata": metadata or {}
+                "user_metadata": metadata or {},
+                "processing_state": temp_state_manager.get_stage_status()
             }
             
             if existing_doc:
@@ -425,7 +542,7 @@ class PersistentUploadService:
         state_manager: ProcessingStateManager,
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Execute the processing pipeline from current stage"""
+        """Execute the processing pipeline from current stage with auto-advancement"""
         
         # Define stage execution order
         stage_order = [
@@ -443,6 +560,20 @@ class PersistentUploadService:
         start_index = 0
         if current_stage in stage_order:
             start_index = stage_order.index(current_stage)
+        elif current_stage == ProcessingStage.UPLOAD.value:
+            # If current stage is upload and it's complete, start from extraction
+            if state_manager.is_stage_complete(ProcessingStage.UPLOAD.value):
+                start_index = 0  # Start from extraction
+                # Advance to extraction stage
+                state_manager.processing_state["current_stage"] = ProcessingStage.EXTRACTION.value
+                state_manager._save_processing_state()
+                logger.info(f"Advanced from upload to extraction for document {context['document_id']}")
+            else:
+                return {
+                    "status": "error",
+                    "error": "Upload stage not completed",
+                    "failed_stage": ProcessingStage.UPLOAD.value
+                }
         
         logger.info(f"Starting processing pipeline for document {context['document_id']} from stage {current_stage}")
         
@@ -456,6 +587,18 @@ class PersistentUploadService:
                 logger.info(f"Skipping completed stage: {stage}")
                 continue
             
+            # AUTO-ADVANCE: Try to advance to this stage if needed
+            if not self._advance_to_next_stage_if_needed(state_manager, stage):
+                # If we can't advance and stage isn't current, there's a problem
+                if state_manager.get_current_stage() != stage:
+                    error_msg = f"Cannot advance to stage {stage} from {state_manager.get_current_stage()}"
+                    logger.error(error_msg)
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "failed_stage": stage
+                    }
+            
             processor = self.processors.get(stage)
             if not processor:
                 error_msg = f"No processor found for stage: {stage}"
@@ -466,9 +609,9 @@ class PersistentUploadService:
                     "failed_stage": stage
                 }
             
-            # Check if stage can be executed
+            # Now the stage should be ready - simpler check
             if not processor.can_execute(state_manager, context):
-                error_msg = f"Stage {stage} cannot be executed"
+                error_msg = f"Stage {stage} processor reports it cannot execute"
                 logger.error(error_msg)
                 return {
                     "status": "error",
@@ -513,3 +656,93 @@ class PersistentUploadService:
         """Check if a stage name is valid"""
         valid_stages = [s.value for s in ProcessingStage]
         return stage in valid_stages
+    
+    def _advance_to_next_stage_if_needed(self, state_manager: ProcessingStateManager, target_stage: str) -> bool:
+        """
+        Advance processing state to target stage if prerequisites are met.
+        
+        Args:
+            state_manager: Processing state manager
+            target_stage: Stage we want to execute
+            
+        Returns:
+            True if stage is ready for execution, False otherwise
+        """
+        current_stage = state_manager.get_current_stage()
+        
+        # Define stage progression
+        stage_progression = {
+            ProcessingStage.EXTRACTION.value: ProcessingStage.UPLOAD.value,
+            ProcessingStage.CHUNKING.value: ProcessingStage.EXTRACTION.value,
+            ProcessingStage.EMBEDDING.value: ProcessingStage.CHUNKING.value,
+            ProcessingStage.TREE_BUILDING.value: ProcessingStage.EMBEDDING.value,
+            ProcessingStage.VECTOR_STORAGE.value: ProcessingStage.TREE_BUILDING.value
+        }
+        
+        # If already at target stage, no advancement needed
+        if current_stage == target_stage:
+            return True
+        
+        # Check if we can advance from current stage to target stage
+        required_previous_stage = stage_progression.get(target_stage)
+        
+        if required_previous_stage and current_stage == required_previous_stage:
+            # Check if current stage is complete
+            if state_manager.is_stage_complete(current_stage):
+                # Advance to target stage
+                state_manager.processing_state["current_stage"] = target_stage
+                state_manager._save_processing_state()
+                logger.info(f"Advanced document {state_manager.document_id} from {current_stage} to {target_stage}")
+                return True
+            else:
+                logger.error(f"Cannot advance to {target_stage}: {current_stage} is not complete")
+                return False
+        
+        # Special case: handle upload to extraction transition
+        if (current_stage == ProcessingStage.UPLOAD.value and 
+            target_stage == ProcessingStage.EXTRACTION.value):
+            
+            if state_manager.is_stage_complete(ProcessingStage.UPLOAD.value):
+                # Advance to extraction stage
+                state_manager.processing_state["current_stage"] = ProcessingStage.EXTRACTION.value
+                state_manager._save_processing_state()
+                logger.info(f"Advanced document {state_manager.document_id} from upload to extraction")
+                return True
+            else:
+                logger.error(f"Upload stage not complete for document {state_manager.document_id}")
+                return False
+        
+        # Check if target stage is already completed (skip case)
+        if state_manager.is_stage_complete(target_stage):
+            logger.info(f"Stage {target_stage} already completed for document {state_manager.document_id}")
+            return False  # Will be skipped in main loop
+        
+        logger.error(f"Cannot advance from {current_stage} to {target_stage}")
+        return False
+    
+    def _create_processing_lock(self, doc_dir: str):
+        """Create a processing lock file to prevent concurrent operations"""
+        try:
+            stages_dir = os.path.join(doc_dir, "stages")
+            self.storage_adapter.create_directory(stages_dir)
+            
+            lock_file = os.path.join(stages_dir, "processing.lock")
+            lock_data = {
+                "locked_at": datetime.now().isoformat(),
+                "process_id": os.getpid()
+            }
+            
+            self.storage_adapter.write_file(json.dumps(lock_data), lock_file)
+            logger.debug(f"Created processing lock: {lock_file}")
+        except Exception as e:
+            logger.warning(f"Failed to create processing lock: {str(e)}")
+    
+    def _remove_processing_lock(self, doc_dir: str):
+        """Remove the processing lock file"""
+        try:
+            lock_file = os.path.join(doc_dir, "stages", "processing.lock")
+            if self.storage_adapter.file_exists(lock_file):
+                self.storage_adapter.delete_file(lock_file)
+                logger.debug(f"Removed processing lock: {lock_file}")
+        except Exception as e:
+            logger.warning(f"Failed to remove processing lock: {str(e)}")

@@ -4,6 +4,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 import os
 logger = logging.getLogger(__name__)
+from datetime import datetime
 
 class Chunker:
     """
@@ -73,18 +74,11 @@ class Chunker:
         all_chunks.extend(self._process_image_items(image_items))
         
         return all_chunks
-    
+
     def _combine_text_items(self, text_items: List[Dict[str, Any]], page_idx: int) -> List[Dict[str, Any]]:
         """
         Combine text items into larger chunks with overlap between adjacent chunks.
-        Preserves bbox information for each chunk.
-        
-        Args:
-            text_items: List of text content items from same page
-            page_idx: Page index of these items
-            
-        Returns:
-            List of combined text chunks
+        FIXED VERSION: Prevents infinite loops and adds progress tracking.
         """
         if not text_items:
             return []
@@ -93,28 +87,43 @@ class Chunker:
         current_text = ""
         current_indices = []
         current_size = 0
-        current_bboxes = []  # Track bboxes for current chunk
+        current_bboxes = []
         
-        # Keep track of text and indices for overlap
-        all_text_items = []  # List of (text, index, bbox) tuples in order
-        
-        # First pass - collect all valid text items
+        # Collect all valid text items first
+        all_text_items = []
         for item in text_items:
             text = item.get("text", "")
             if not text:
                 continue
             
-            bbox = item.get("bbox", None)  # Get bbox if available
+            bbox = item.get("bbox", None)
             all_text_items.append((text, item["original_index"], bbox))
         
         if not all_text_items:
             return []
         
-        # Second pass - create chunks with overlap
-        current_chunk_start = 0
-        i = 0
+        logger.info(f"Processing {len(all_text_items)} text items for page {page_idx}")
         
-        while i < len(all_text_items):
+        # SAFETY MEASURES: Prevent infinite loops
+        i = 0
+        safety_counter = 0
+        MAX_ITERATIONS = len(all_text_items) * 3  # Safety limit
+        last_i = -1  # Track if i is advancing
+        
+        while i < len(all_text_items) and safety_counter < MAX_ITERATIONS:
+            safety_counter += 1
+            
+            # SAFETY CHECK: Ensure we're making progress
+            if i == last_i:
+                logger.warning(f"Chunking loop detected same index {i} twice, forcing advance")
+                i += 1
+                continue
+            last_i = i
+            
+            # Progress logging for large documents
+            if safety_counter % 50 == 0:
+                logger.info(f"Chunking progress: {safety_counter}/{len(all_text_items)} items processed")
+            
             text, idx, bbox = all_text_items[i]
             text_size = len(text)
             
@@ -123,100 +132,100 @@ class Chunker:
             if (current_size + text_size > self.max_chunk_size and 
                 current_size >= self.min_chunk_size):
                 
-                # Create chunk
-                chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
-                
-                # Prepare original_boxes data structure - contains all bbox information
-                original_boxes = []
-                for j, bbox_info in enumerate(current_bboxes):
-                    if bbox_info:
-                        original_boxes.append({
-                            "original_page_index": page_idx,
-                            "bbox": bbox_info,
-                            "original_index": current_indices[j]
-                        })
-                
-                chunk = {
-                    "id": chunk_id,
-                    "content": current_text,
-                    "metadata": {
-                        "type": "text",
-                        "page_idx": page_idx,
-                        "original_indices": current_indices,
-                        "original_boxes": original_boxes  # Add bbox information
-                    }
-                }
-                chunks.append(chunk)
-                
-                # Calculate new starting position with overlap
-                # Find position that gives us approximately overlap_size characters of overlap
-                overlap_chars = 0
-                backtrack_idx = -1
-                
-                for j in range(len(current_indices) - 1, -1, -1):
-                    item_idx = current_indices[j]
-                    # Find the position of this item in all_text_items
-                    pos = next((k for k, (_, idx, _) in enumerate(all_text_items) if idx == item_idx), -1)
+                # Create chunk with current content
+                if current_text.strip():
+                    chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
                     
-                    if pos >= 0:
-                        item_text = all_text_items[pos][0]
-                        overlap_chars += len(item_text)
-                        
-                        if overlap_chars >= self.overlap_size:
-                            backtrack_idx = pos
-                            break
+                    # Prepare original_boxes data structure
+                    original_boxes = []
+                    for j, bbox_info in enumerate(current_bboxes):
+                        if bbox_info and isinstance(bbox_info, (list, tuple)) and len(bbox_info) >= 4:
+                            original_boxes.append({
+                                "original_page_index": page_idx,
+                                "bbox": bbox_info,
+                                "original_index": current_indices[j] if j < len(current_indices) else idx
+                            })
+                    
+                    chunk = {
+                        "id": chunk_id,
+                        "content": current_text.strip(),
+                        "metadata": {
+                            "type": "text",
+                            "page_idx": page_idx,
+                            "original_indices": current_indices,
+                            "original_boxes": original_boxes
+                        }
+                    }
+                    chunks.append(chunk)
+                    logger.debug(f"Created chunk {len(chunks)} with {len(current_text)} characters")
                 
-                if backtrack_idx >= 0:
-                    # Start new chunk from this position
-                    current_chunk_start = backtrack_idx
-                    i = current_chunk_start  # Reset loop to this position
+                # SIMPLIFIED OVERLAP LOGIC: Just go back a few items instead of complex calculation
+                overlap_items = min(3, len(current_indices))  # Simple: overlap last 3 items
+                if overlap_items > 0:
+                    # Find the starting position for overlap
+                    overlap_start_idx = current_indices[-overlap_items]
+                    # Find this index in our all_text_items array
+                    new_i = max(0, i - overlap_items)
+                    
+                    # Ensure we're moving forward
+                    if new_i >= i:
+                        new_i = max(0, i - 1)
+                    
+                    i = new_i
                 else:
-                    # If we couldn't find a good overlap point, move forward by half the chunk
-                    current_chunk_start = max(0, i - 2)  # At least go back 2 items if possible
-                    i = current_chunk_start
+                    # No overlap possible, just continue from current position
+                    pass
                 
                 # Reset for next chunk
                 current_text = ""
                 current_indices = []
                 current_bboxes = []
                 current_size = 0
-                continue  # Skip increment at end of loop since we set i explicitly
+                continue
             
             # Add this item to the current chunk
             if current_text:
                 current_text += " "
             current_text += text
             current_indices.append(idx)
-            current_bboxes.append(bbox)  # Store bbox for this text segment
+            current_bboxes.append(bbox)
             current_size += text_size
+            
+            # ENSURE FORWARD PROGRESS
             i += 1
         
+        # SAFETY CHECK: Report if we hit limits
+        if safety_counter >= MAX_ITERATIONS:
+            logger.error(f"Chunking safety limit reached for page {page_idx}. Created {len(chunks)} chunks so far.")
+        
         # Add the last chunk if it has content
-        if current_text:
-            chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}"
+        if current_text.strip():
+            chunk_id = f"text_{current_indices[0]}_{current_indices[-1]}" if current_indices else f"text_final_{page_idx}"
             
             # Prepare original_boxes data for the last chunk
             original_boxes = []
             for j, bbox_info in enumerate(current_bboxes):
-                if bbox_info:
+                if bbox_info and isinstance(bbox_info, (list, tuple)) and len(bbox_info) >= 4:
                     original_boxes.append({
                         "original_page_index": page_idx,
                         "bbox": bbox_info,
-                        "original_index": current_indices[j]
+                        "original_index": current_indices[j] if j < len(current_indices) else 0
                     })
             
             chunk = {
                 "id": chunk_id,
-                "content": current_text,
+                "content": current_text.strip(),
                 "metadata": {
                     "type": "text",
                     "page_idx": page_idx,
                     "original_indices": current_indices,
-                    "original_boxes": original_boxes  # Add bbox information
+                    "original_boxes": original_boxes
                 }
             }
             chunks.append(chunk)
+            logger.debug(f"Created final chunk {len(chunks)} with {len(current_text)} characters")
         
+        logger.info(f"Completed chunking for page {page_idx}: {len(chunks)} chunks created from {len(all_text_items)} text items")
         return chunks
     
     def _process_table_items(self, table_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
