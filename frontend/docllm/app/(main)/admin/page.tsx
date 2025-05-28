@@ -40,6 +40,8 @@ export default function AdminPage() {
   const [selectedDocumentStages, setSelectedDocumentStages] = useState<DocumentProcessingStatus | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [selectedDocumentForViewer, setSelectedDocumentForViewer] = useState<any>(null);
+  const [recovering, setRecovering] = useState<string | null>(null);
+  const [systemCleanup, setSystemCleanup] = useState(false);
 
   const handleOpenViewer = (doc: any) => {
     setSelectedDocumentForViewer(doc);
@@ -51,6 +53,48 @@ export default function AdminPage() {
     fetchDocuments();
     fetchProcessingStats();
   }, []);
+
+  const handleForceUnlock = async (documentId: string) => {
+  setRecovering(documentId);
+  try {
+    const result = await adminApi.forceUnlockDocument(documentId);
+    toast({
+      type: 'success',
+      description: `Document unlocked: ${result.message}`
+    });
+    fetchDocuments(); // Refresh document list
+  } catch (error) {
+    console.error('Failed to unlock document:', error);
+    toast({
+      type: 'error',
+      description: 'Failed to unlock document'
+    });
+  } finally {
+    setRecovering(null);
+  }
+};
+
+const handleSystemCleanup = async () => {
+  setSystemCleanup(true);
+  try {
+    const result = await adminApi.cleanupStaleLocksSystem();
+    toast({
+      type: 'success',
+      description: `System cleanup completed: ${result.message}`
+    });
+    fetchDocuments();
+    fetchStats();
+  } catch (error) {
+    console.error('Failed to cleanup system:', error);
+    toast({
+      type: 'error',
+      description: 'Failed to cleanup stale locks'
+    });
+  } finally {
+    setSystemCleanup(false);
+  }
+};
+
 
   const fetchStats = async () => {
     try {
@@ -82,6 +126,12 @@ export default function AdminPage() {
       const data = await adminApi.listDocuments({ status });
       setDocuments(data.documents);
       setStatusCounts(data.status_counts);
+      
+      // Ensure activeTab is synchronized with the fetched data
+      const expectedTab = status || 'all';
+      if (activeTab !== expectedTab) {
+        setActiveTab(expectedTab);
+      }
     } catch (error) {
       console.error('Failed to fetch documents:', error);
       toast({
@@ -94,9 +144,30 @@ export default function AdminPage() {
   };
 
   const handleTabChange = (value: string) => {
+    // Prevent unnecessary API calls if already on this tab
+    if (activeTab === value && !loading) {
+      return;
+    }
+    
+    // Update tab state immediately for UI responsiveness
     setActiveTab(value);
-    fetchDocuments(value === 'all' ? undefined : value);
+    
+    // Fetch documents for the new tab
+    const statusFilter = value === 'all' ? undefined : value;
+    fetchDocuments(statusFilter);
   };
+
+  useEffect(() => {
+    const initializeData = async () => {
+      await Promise.all([
+        fetchStats(),
+        fetchDocuments(), // This will load 'all' documents by default
+        fetchProcessingStats()
+      ]);
+    };
+    
+    initializeData();
+  }, []); 
 
   const handleUpload = async () => {
     if (!uploadFile) return;
@@ -478,8 +549,30 @@ export default function AdminPage() {
     );
   };
 
+  useEffect(() => {
+  const handleEscapeKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      // Close modals in priority order (top modal first)
+      if (viewerOpen) {
+        setViewerOpen(false);
+      } else if (showStagesModal) {
+        setShowStagesModal(false);
+      } else if (showDetailsModal) {
+        setShowDetailsModal(false);
+      }
+    }
+  };
+
+  document.addEventListener('keydown', handleEscapeKey);
+  
+  return () => {
+    document.removeEventListener('keydown', handleEscapeKey);
+  };
+}, [viewerOpen, showStagesModal, showDetailsModal]);
+
   return (
-    <div className="container mx-auto py-8 px-4 max-w-7xl">
+    <div className="w-full min-h-screen px-4 py-8">
+      <div className="w-full mx-auto">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Admin Dashboard</h1>
         <Button 
@@ -773,69 +866,72 @@ export default function AdminPage() {
       </Card>
 
       {/* Documents List Section */}
-      <Card>
+      <Card className="mb-8 w-full">
         <CardHeader>
           <CardTitle>Document Management</CardTitle>
           <CardDescription>View and manage document processing with stage-level control</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="w-full">
           <Tabs defaultValue="all" value={activeTab} onValueChange={handleTabChange}>
             <TabsList className="mb-4">
               <TabsTrigger value="all">
                 All
-                {statusCounts.processed !== undefined && (
-                  <span className="ml-1 text-xs">({documents.length})</span>
+                {statusCounts && Object.keys(statusCounts).length > 0 && (
+                  <span className="ml-1 text-xs">
+                    ({Object.values(statusCounts).reduce((sum: number, count: number) => sum + count, 0)})
+                  </span>
                 )}
               </TabsTrigger>
               <TabsTrigger value="processed">
                 Processed
-                {statusCounts.processed !== undefined && (
+                {statusCounts?.processed !== undefined && (
                   <span className="ml-1 text-xs">({statusCounts.processed})</span>
                 )}
               </TabsTrigger>
               <TabsTrigger value="processing">
                 Processing
-                {statusCounts.processing !== undefined && (
+                {statusCounts?.processing !== undefined && (
                   <span className="ml-1 text-xs">({statusCounts.processing})</span>
                 )}
               </TabsTrigger>
               <TabsTrigger value="failed">
                 Failed
-                {statusCounts.failed !== undefined && (
+                {statusCounts?.failed !== undefined && (
                   <span className="ml-1 text-xs">({statusCounts.failed})</span>
                 )}
               </TabsTrigger>
               <TabsTrigger value="pending">
                 Pending
-                {statusCounts.pending !== undefined && (
+                {statusCounts?.pending !== undefined && (
                   <span className="ml-1 text-xs">({statusCounts.pending})</span>
                 )}
               </TabsTrigger>
             </TabsList>
             
-            <TabsContent value={activeTab}>
+            <TabsContent value={activeTab} className="w-full">
               {loading ? (
-                <div className="flex justify-center items-center py-8">
-                  <div className="animate-spin mr-2 h-5 w-5 border-t-2 border-b-2 border-primary rounded-full"></div>
-                  <span>Loading documents...</span>
-                </div>
+                <div className="flex justify-center items-center py-8 min-h-[100px] w-full"> {/* Fixed: Added min-height and full width */}
+                    <div className="animate-spin mr-2 h-5 w-5 border-t-2 border-b-2 border-primary rounded-full"></div>
+                    <span>Loading documents...</span>
+                  </div>
               ) : documents.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  No documents found
-                </div>
+                <div className="text-center py-8 text-muted-foreground min-h-[100px] w-full flex items-center justify-center"> {/* Fixed: Added min-height and centering */}
+                    No documents found
+                  </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <Table>
+                <div className="w-full"> {/* Fixed: Ensure table container is full width */}
+                    <div className="overflow-x-auto w-full"> {/* Fixed: Full width overflow container */}
+                      <Table className="w-full min-w-full"> 
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-1/6 max-w-[150px]">Document ID</TableHead>
-                        <TableHead className="w-1/4 max-w-[200px]">Filename</TableHead>
+                        <TableHead className="w-1/6 min-w-[200px] max-w-[150px]">Document ID</TableHead>
+                        <TableHead className="w-1/4 min-w-[200px] max-w-[200px]">Filename</TableHead>
                         <TableHead className="w-[100px]">Status</TableHead>
                         <TableHead className="w-[120px]">Current Stage</TableHead>
                         <TableHead className="w-[150px]">Processing Date</TableHead>
                         <TableHead className="w-[100px] text-center">Chunks</TableHead>
                         <TableHead className="w-[80px] text-center">Pages</TableHead>
-                        <TableHead className="w-[200px]">Actions</TableHead>
+                        <TableHead className="w-[200px] min-w-[200px]">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -952,6 +1048,27 @@ export default function AdminPage() {
                                 <Eye className="h-3 w-3" />
                                 Chunks
                               </Button>
+                              {doc.status === 'processing' && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleForceUnlock(doc.document_id)}
+                                disabled={recovering === doc.document_id}
+                                className="flex items-center gap-1"
+                              >
+                                {recovering === doc.document_id ? (
+                                  <>
+                                    <div className="animate-spin mr-1 h-3 w-3 border-t-2 border-b-2 border-primary rounded-full"></div>
+                                    Unlocking...
+                                  </>
+                                ) : (
+                                  <>
+                                    <AlertCircle className="h-3 w-3" />
+                                    Force Unlock
+                                  </>
+                                )}
+                              </Button>
+                            )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -959,9 +1076,41 @@ export default function AdminPage() {
                     </TableBody>
                   </Table>
                 </div>
+                </div>
               )}
             </TabsContent>
           </Tabs>
+        </CardContent>
+      </Card>
+
+
+      {/*Recovery section */}
+      <Card className='outline'>
+        <CardHeader>
+          <CardTitle>Server Recovery</CardTitle>
+          <CardDescription>Recovery tools for server crashes and stuck processes</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-4">
+            <Button
+              onClick={handleSystemCleanup}
+              disabled={systemCleanup}
+              variant="outline"
+              className="flex items-center gap-2 bg-red-100 text-red-800 hover:bg-red-200 hover:text-red-800"
+            >
+              {systemCleanup ? (
+                <>
+                  <div className="animate-spin mr-2 h-4 w-4 border-t-2 border-b-2 border-primary rounded-full"></div>
+                  Cleaning up...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4" />
+                  Cleanup Stale Locks
+                </>
+              )}
+            </Button>
+          </div>
         </CardContent>
       </Card>
       
@@ -970,9 +1119,10 @@ export default function AdminPage() {
           isOpen={viewerOpen}
           onClose={() => setViewerOpen(false)}
           documentId={selectedDocumentForViewer.document_id}
-          documentName={selectedDocumentForViewer.document_name || 'Unnamed Document'}
+          documentName={selectedDocumentForViewer.original_filename || 'Unnamed Document'}
         />
       )}
+    </div>
     </div>
   );
 }

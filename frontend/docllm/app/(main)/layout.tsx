@@ -49,7 +49,7 @@ export default function MainLayout({
   const currentChatId = getCurrentChatId();
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen w-screen">
       <Sidebar>
         <SidebarHeader>
           <SidebarMenu>
@@ -138,7 +138,7 @@ export default function MainLayout({
   </SidebarFooter>
       </Sidebar>
       
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 overflow-auto w-full">
         {children}
       </main>
     </div>

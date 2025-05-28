@@ -2,7 +2,7 @@ import os
 import time
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
 from core.config import get_config
@@ -40,6 +40,8 @@ class PersistentUploadService:
             ProcessingStage.TREE_BUILDING.value: TreeBuildingProcessor(self.config),
             ProcessingStage.VECTOR_STORAGE.value: VectorStorageProcessor(self.config)
         }
+        
+        self._cleanup_stale_locks_on_startup()
         
         logger.info("Initialized persistent upload service")
     
@@ -746,3 +748,123 @@ class PersistentUploadService:
                 logger.debug(f"Removed processing lock: {lock_file}")
         except Exception as e:
             logger.warning(f"Failed to remove processing lock: {str(e)}")
+            
+    def _cleanup_stale_locks_on_startup(self):
+        """Clean up stale locks when service starts (after server restart)"""
+        try:
+            cleanup_result = self.cleanup_stale_locks()
+            if cleanup_result["cleaned_documents"] > 0:
+                logger.info(f"Startup cleanup: Reset {cleanup_result['cleaned_documents']} documents and removed {cleanup_result['locks_removed']} stale locks")
+        except Exception as e:
+            logger.error(f"Error during startup lock cleanup: {str(e)}")
+
+    def cleanup_stale_locks(self, max_lock_age_minutes: int = 10) -> Dict[str, Any]:
+        """
+        Clean up stale processing locks across all documents.
+        
+        Args:
+            max_lock_age_minutes: Maximum age of locks before considering them stale
+            
+        Returns:
+            Dictionary with cleanup results
+        """
+        try:
+            # Get all documents with processing status
+            all_documents = self.doc_repository.list_documents()
+            processing_documents = [
+                doc for doc in all_documents 
+                if doc.get("status") == "processing"
+            ]
+            
+            cleaned_documents = 0
+            locks_removed = 0
+            errors = []
+            
+            cutoff_time = datetime.now() - timedelta(minutes=max_lock_age_minutes)
+            
+            for document in processing_documents:
+                document_id = document.get("document_id")
+                if not document_id:
+                    continue
+                
+                try:
+                    doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
+                    
+                    # Check processing lock
+                    processing_lock = os.path.join(doc_dir, "stages", "processing.lock")
+                    state_lock = os.path.join(doc_dir, "stages", "state.lock")
+                    
+                    should_cleanup = False
+                    
+                    # Check if locks are stale
+                    for lock_file in [processing_lock, state_lock]:
+                        if self.storage_adapter.file_exists(lock_file):
+                            try:
+                                lock_content = self.storage_adapter.read_file(lock_file)
+                                if lock_content:
+                                    lock_data = json.loads(lock_content)
+                                    locked_at = datetime.fromisoformat(lock_data["locked_at"])
+                                    
+                                    if locked_at < cutoff_time:
+                                        should_cleanup = True
+                                        break
+                            except:
+                                # If we can't read the lock, consider it stale
+                                should_cleanup = True
+                                break
+                    
+                    if should_cleanup:
+                        # Remove stale locks
+                        for lock_file in [processing_lock, state_lock]:
+                            if self.storage_adapter.file_exists(lock_file):
+                                self.storage_adapter.delete_file(lock_file)
+                                locks_removed += 1
+                        
+                        # Reset document status
+                        processing_state = document.get("processing_state", {})
+                        current_stage = processing_state.get("current_stage", "upload")
+                        
+                        # Determine appropriate status based on completed stages
+                        completed_stages = processing_state.get("completed_stages", [])
+                        
+                        if ProcessingStage.UPLOAD.value in completed_stages:
+                            # If upload was completed, mark as failed so it can be retried from current stage
+                            new_status = "failed"
+                            error_message = f"Stale lock cleanup - can retry from {current_stage}"
+                        else:
+                            # If upload wasn't even completed, mark as pending
+                            new_status = "pending"
+                            error_message = "Stale lock cleanup - needs re-upload"
+                        
+                        self.doc_repository.update_document(document_id, {
+                            "status": new_status,
+                            "error_message": error_message,
+                            "stale_lock_cleanup_time": datetime.now().isoformat()
+                        })
+                        
+                        cleaned_documents += 1
+                        logger.info(f"Cleaned up stale locks for document {document_id}")
+                        
+                except Exception as e:
+                    error_msg = f"Error cleaning document {document_id}: {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+            
+            result = {
+                "cleaned_documents": cleaned_documents,
+                "locks_removed": locks_removed,
+                "total_processing_documents": len(processing_documents),
+                "errors": errors
+            }
+            
+            logger.info(f"Stale lock cleanup completed: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error during stale lock cleanup: {str(e)}")
+            return {
+                "cleaned_documents": 0,
+                "locks_removed": 0,
+                "total_processing_documents": 0,
+                "errors": [str(e)]
+            }

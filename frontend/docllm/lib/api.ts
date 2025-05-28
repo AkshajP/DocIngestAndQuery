@@ -356,5 +356,17 @@ import {
     const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
     
     return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/chunks${queryString}`);
-  }
+  },
+  forceUnlockDocument: async (documentId: string): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/documents/${documentId}/force-unlock`, {
+      method: "POST",
+    });
+  },
+
+  cleanupStaleLocksSystem: async (): Promise<any> => {
+    return fetchWithErrorHandling<any>(`/admin/system/cleanup-stale-locks`, {
+      method: "POST",
+    });
+  },
+
 };

@@ -3,8 +3,6 @@
 Currently if the document is uploaded, then the case_path attribute needs to be manually set in registry.json 
 to ensure the folder structure is seen else files will be under un-categorized.
 
-if document is deleted after chat creation, make sure it has a 
-
 -File upload status not updated correctly
 
 ensure that processing state.json is updated correctly. and include SSEs so that the updates are real time on the dashboard. 

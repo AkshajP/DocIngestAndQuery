@@ -106,22 +106,48 @@ async def list_all_documents(
     doc_repository = DocumentMetadataRepository()
     all_documents = doc_repository.list_documents()
     
-    # Filter by status if requested
-    if status and status != "all":
-        all_documents = [doc for doc in all_documents if doc.get("status") == status]
-    
-    # Format the response
-    return {
-        "documents": all_documents,
-        "total": len(all_documents),
-        "status_counts": {
-            "processed": len([doc for doc in all_documents if doc.get("status") == "processed"]),
-            "processing": len([doc for doc in all_documents if doc.get("status") == "processing"]),
-            "failed": len([doc for doc in all_documents if doc.get("status") == "failed"]),
-            "pending": len([doc for doc in all_documents if doc.get("status") == "pending"])
-        }
+    # Calculate status counts from ALL documents BEFORE filtering
+    status_counts = {
+        "processed": len([doc for doc in all_documents if doc.get("status") == "processed"]),
+        "processing": len([doc for doc in all_documents if doc.get("status") == "processing"]), 
+        "failed": len([doc for doc in all_documents if doc.get("status") == "failed"]),
+        "pending": len([doc for doc in all_documents if doc.get("status") == "pending"])
     }
-
+    
+    # NOW filter documents for display (keep original all_documents intact)
+    filtered_documents = all_documents
+    if status and status != "all":
+        filtered_documents = [doc for doc in all_documents if doc.get("status") == status]
+    
+    formatted_documents = []
+    for doc in filtered_documents:
+        formatted_doc = {
+            "document_id": doc.get("document_id", ""),
+            "document_name": doc.get("original_filename", "Unnamed"),  # ✅ Map original_filename to document_name
+            "status": doc.get("status", "Unknown"),
+            "chunks_count": doc.get("chunks_count", 0),
+            "processing_date": doc.get("processing_date"),
+            "case_path": doc.get("case_path", None),
+            "page_count": doc.get("page_count", None),
+            "total_processing_time": doc.get("total_processing_time"),
+            "processing_state": doc.get("processing_state"),
+            # Include original fields for admin functionality
+            "original_filename": doc.get("original_filename"),
+            "original_file_path": doc.get("original_file_path"),
+            "stored_file_path": doc.get("stored_file_path"),
+            "case_id": doc.get("case_id"),
+            "file_type": doc.get("file_type"),
+            "user_metadata": doc.get("user_metadata", {}),
+        }
+        formatted_documents.append(formatted_doc)
+    
+    return {
+        "documents": formatted_documents,  # ✅ Now properly formatted
+        "total": len(formatted_documents),
+        "status_counts": status_counts  # ✅ Always based on all documents, not filtered ones
+    }
+    
+    
 @router.post("/documents/upload")
 async def upload_new_document(
     background_tasks: BackgroundTasks,
@@ -640,3 +666,72 @@ async def _retry_from_stage(document_id: str, from_stage: Optional[str], case_id
         logger.info(f"Retry from stage completed for document {document_id}: {result['status']}")
     except Exception as e:
         logger.error(f"Error in retry from stage for document {document_id}: {str(e)}")
+
+@router.post("/documents/{document_id}/force-unlock")
+async def force_unlock_document(
+    document_id: str,
+    admin_user: str = Depends(get_admin_user)
+):
+    """Force remove processing locks for a stuck document after server crash"""
+    try:
+        upload_service = PersistentUploadService()
+        doc_dir = os.path.join(upload_service.config.storage.storage_dir, document_id)
+        
+        # Remove processing lock
+        lock_file = os.path.join(doc_dir, "stages", "processing.lock")
+        state_lock_file = os.path.join(doc_dir, "stages", "state.lock")
+        
+        locks_removed = []
+        
+        if upload_service.storage_adapter.file_exists(lock_file):
+            upload_service.storage_adapter.delete_file(lock_file)
+            locks_removed.append("processing.lock")
+        
+        if upload_service.storage_adapter.file_exists(state_lock_file):
+            upload_service.storage_adapter.delete_file(state_lock_file)
+            locks_removed.append("state.lock")
+        
+        # Reset document status if it was stuck in processing
+        doc_repository = DocumentMetadataRepository()
+        document = doc_repository.get_document(document_id)
+        
+        if document and document.get("status") == "processing":
+            # Reset to a recoverable state
+            processing_state = document.get("processing_state", {})
+            current_stage = processing_state.get("current_stage", "upload")
+            
+            doc_repository.update_document(document_id, {
+                "status": "failed",  # Mark as failed so it can be retried
+                "error_message": "Server crash recovery - locks removed",
+                "recovery_time": datetime.now().isoformat()
+            })
+        
+        return {
+            "status": "success", 
+            "message": f"Removed {len(locks_removed)} lock files",
+            "locks_removed": locks_removed,
+            "document_status_reset": document.get("status") == "processing" if document else False
+        }
+        
+    except Exception as e:
+        logger.error(f"Error force unlocking document {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to unlock document: {str(e)}")
+
+@router.post("/system/cleanup-stale-locks")
+async def cleanup_all_stale_locks(
+    admin_user: str = Depends(get_admin_user)
+):
+    """Clean up all stale locks across the system"""
+    try:
+        upload_service = PersistentUploadService()
+        cleanup_result = upload_service.cleanup_stale_locks()
+        
+        return {
+            "status": "success",
+            "message": "Stale locks cleanup completed",
+            **cleanup_result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up stale locks: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup stale locks: {str(e)}")
