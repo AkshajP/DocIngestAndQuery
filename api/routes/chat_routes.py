@@ -5,7 +5,7 @@ import asyncio
 import json
 import time 
 from datetime import datetime
-
+from db.chat_store.models import ChatSettings
 from api.models.chat_models import (
     ChatCreateRequest, ChatDetailResponse, ChatUpdateRequest, 
     ChatListResponse, ChatHistoryResponse, ChatDocumentsUpdateRequest
@@ -19,6 +19,12 @@ from services.retrieval.query_engine import QueryEngine
 from services.feedback.manager import FeedbackManager
 from core.config import get_config
 from api.routes.access_control import validate_user_case_access, get_current_case, get_current_user
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/ai/chats", tags=["chats"])
@@ -366,6 +372,24 @@ async def submit_query(
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     
+    chat_settings = None
+    if hasattr(chat, 'settings') and chat.settings:
+        if isinstance(chat.settings, dict):
+            # Convert dict to ChatSettings object
+            try:
+                chat_settings = ChatSettings(**chat.settings)
+            except Exception as e:
+                logger.warning(f"Invalid chat settings format: {e}")
+                chat_settings = ChatSettings()  # Use defaults
+        elif hasattr(chat.settings, '__dict__'):
+            # Already a ChatSettings object
+            chat_settings = chat.settings
+        else:
+            chat_settings = ChatSettings()  # Use defaults
+    else:
+        chat_settings = ChatSettings()  # Use defaults
+    
+    
     # Get document IDs for this chat
     document_ids = chat_service.get_chat_documents(chat_id)
     if not document_ids:
@@ -430,6 +454,7 @@ async def submit_query(
                 user_id=user_id,
                 case_id=case_id,
                 document_ids=document_ids,
+                chat_settings=chat_settings,
                 use_tree=request.use_tree,
                 top_k=request.top_k,
                 chat_history=chat_history,
@@ -447,6 +472,7 @@ async def submit_query(
             document_ids=document_ids,
             chat_id=chat_id,
             user_id=user_id,
+            chat_settings=chat_settings,
             use_tree=request.use_tree if request.use_tree is not None else False,
             use_hybrid=request.use_hybrid,  # Pass hybrid search parameter
             vector_weight=request.vector_weight,  # Pass vector weight
@@ -616,8 +642,8 @@ async def regenerate_response(
 async def _stream_query_response(
     query_service, chat_service, history_service,
     question, chat_id, user_id, case_id, document_ids,
-    use_tree, top_k, chat_history, model_preference,
-    message_id, tree_level_filter, use_hybrid=True, vector_weight=0.4
+    use_tree, top_k, chat_history, model_preference, 
+    message_id, tree_level_filter, chat_settings=None, use_hybrid=True, vector_weight=0.4
 ) -> AsyncGenerator[str, None]:
     """Stream the query response"""
     # Start query processing
@@ -637,14 +663,14 @@ async def _stream_query_response(
     chunks = await asyncio.to_thread(
         query_service.retrieve_relevant_chunks,
         query_embedding=query_embedding,
-        query_text=question,  # Pass query text for BM25
+        query_text=question,
         case_id=case_id, 
         document_ids=document_ids,
-        use_tree=use_tree,
-        use_hybrid=use_hybrid,  # Pass hybrid search parameter
-        vector_weight=vector_weight,  # Pass vector weight
-        top_k=top_k,
-        tree_level_filter=tree_level_filter
+        use_tree=getattr(chat_settings, 'use_tree_search', use_tree) if chat_settings else use_tree,
+        use_hybrid=getattr(chat_settings, 'use_hybrid_search', use_hybrid) if chat_settings else use_hybrid,
+        vector_weight=getattr(chat_settings, 'vector_weight', vector_weight) if chat_settings else vector_weight,
+        top_k=getattr(chat_settings, 'top_k', top_k) if chat_settings else top_k,
+        tree_level_filter=getattr(chat_settings, 'tree_level_filter', tree_level_filter) if chat_settings else tree_level_filter
     )
     
     retrieval_time = time.time() - retrieval_start
@@ -861,3 +887,57 @@ async def list_processed_documents(
             "offset": offset
         }
     }
+    
+@router.put("/{chat_id}/settings")
+async def update_chat_settings(
+    settings: ChatSettings,
+    chat_id: str = Path(..., description="Chat ID"),
+    user_id: str = Depends(get_current_user),
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
+):
+    """Update chat settings"""
+    chat_service = ChatManager()
+    
+    # Update chat with new settings
+    chat = chat_service.update_chat(
+        chat_id=chat_id,
+        user_id=user_id,
+        case_id=case_id,
+        settings=settings.dict()
+    )
+    
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    return {"status": "success", "settings": settings}
+
+@router.get("/{chat_id}/settings")
+async def get_chat_settings(
+    chat_id: str = Path(..., description="Chat ID"),
+    user_id: str = Depends(get_current_user),
+    case_id: str = Depends(get_current_case),
+    _: bool = Depends(validate_user_case_access)
+):
+    """Get chat settings"""
+    chat_service = ChatManager()
+    
+    chat = chat_service.get_chat(
+        chat_id=chat_id,
+        user_id=user_id,
+        case_id=case_id
+    )
+    
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Convert settings to ChatSettings object if needed
+    if isinstance(chat.settings, dict):
+        try:
+            settings = ChatSettings(**chat.settings)
+        except Exception:
+            settings = ChatSettings()  # Use defaults
+    else:
+        settings = chat.settings or ChatSettings()
+    
+    return {"settings": settings}

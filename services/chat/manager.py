@@ -59,13 +59,23 @@ class ChatManager:
                 logger.warning(f"Some document IDs were invalid for case {case_id}")
                 document_ids = valid_doc_ids
         
+        processed_settings = {}
+        if settings:
+            # If settings is a ChatSettings object, convert to dict
+            if hasattr(settings, 'dict'):
+                processed_settings = settings.dict()
+            elif isinstance(settings, dict):
+                processed_settings = settings
+            else:
+                processed_settings = {}
+        
         # Create chat
         chat = self.chat_repo.create_chat(
             title=title,
             user_id=user_id,
             case_id=case_id,
             document_ids=document_ids,
-            settings=settings or {},
+            settings=processed_settings,  # Use processed settings
             state=ChatState.OPEN
         )
         

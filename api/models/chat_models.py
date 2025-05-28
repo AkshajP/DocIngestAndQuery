@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from enum import Enum
-
+from db.chat_store.models import ChatSettings
 
 class MessageRole(str, Enum):
     """Role of a message sender"""
@@ -56,7 +56,7 @@ class ChatCreateRequest(BaseModel):
     """Request to create a new chat"""
     loaded_documents: Optional[List[ChatDocument]] = []
     title: Optional[str] = "Untitled Chat"
-    settings: Optional[Dict[str, Any]] = Field(default_factory=dict)  # Chat settings including model preferences
+    settings: Optional[ChatSettings] = None
 
 class ChatListResponse(BaseModel):
     """Response for listing chats"""
@@ -73,11 +73,13 @@ class ChatDetailResponse(BaseModel):
     messages_count: int
     loaded_documents: List[ChatDocument]
     history: Dict[str, Any]  # Contains recent messages
+    settings: Optional[ChatSettings] = None
 
 
 class ChatUpdateRequest(BaseModel):
     """Request to update chat properties"""
     title: Optional[str] = None
+    settings: Optional[ChatSettings] = None
 
 
 class ChatDocumentsUpdateRequest(BaseModel):
@@ -90,3 +92,7 @@ class ChatHistoryResponse(BaseModel):
     """Response with chat history"""
     messages: List[Message]
     pagination: Dict[str, int]
+
+class ChatSettingsUpdateRequest(BaseModel):
+    """Request to update chat settings"""
+    settings: ChatSettings

@@ -3,7 +3,7 @@
 
 import React, { createContext, useContext, useState, useCallback, ReactNode, useRef} from 'react';
 import { chatApi } from '@/lib/api';
-import { ChatSummary, Message, QueryRequest } from '@/types/chat';
+import { ChatSummary, Message, QueryRequest, ChatSettings, DEFAULT_CHAT_SETTINGS } from '@/types/chat';
 
 interface ChatContextType {
   chats: ChatSummary[];
@@ -32,8 +32,41 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [streamController, setStreamController] = useState<{ close: () => void } | null>(null);
+  const [chatSettings, setChatSettings] = useState<ChatSettings>(DEFAULT_CHAT_SETTINGS);
+  const [updatingSettings, setUpdatingSettings] = useState(false);
 
   const streamControlRef = useRef(null);
+
+
+  const loadChatSettings = async (chatId: string) => {
+  try {
+    const response = await chatApi.getChatSettings(chatId);
+    setChatSettings(response.settings);
+  } catch (error) {
+    console.error('Failed to load chat settings:', error);
+    setChatSettings(DEFAULT_CHAT_SETTINGS);
+  }
+};
+const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
+  setUpdatingSettings(true);
+  try {
+    await chatApi.updateChatSettings(chatId, settings);
+    setChatSettings(settings);
+    toast({
+      type: 'success',
+      description: 'Settings updated successfully!'
+    });
+  } catch (error) {
+    console.error('Failed to update chat settings:', error);
+    toast({
+      type: 'error',
+      description: 'Failed to update settings. Please try again.'
+    });
+    throw error;
+  } finally {
+    setUpdatingSettings(false);
+  }
+};
 
   const fetchChats = useCallback(async () => {
     try {
@@ -374,7 +407,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       getChatTitle,
       highlightDocumentSource,
       sendStreamingMessage,
-      cancelStreaming
+      cancelStreaming,
+      chatSettings,
+      updatingSettings,
+      loadChatSettings,
+      updateChatSettings,
     }}>
       {children}
     </ChatContext.Provider>

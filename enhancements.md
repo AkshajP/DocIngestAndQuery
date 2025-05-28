@@ -11,7 +11,7 @@ Also while document is processing, the server hangs, i want it still to be able 
 
 ## Future Enhancements
 
-- [ ] Sidebar and DASH modal integration
+- [x] Sidebar and DASH modal integration
 - [ ] Regenerated messages should be multi-view
 - [ ] Remove welcome message from backend
 - [ ] Add copy and feedback icons and api to frontend

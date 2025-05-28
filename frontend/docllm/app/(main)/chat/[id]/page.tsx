@@ -24,6 +24,8 @@ import {
   XIcon // Added for stop button
 } from 'lucide-react';
 import { Message } from '@/types/chat';
+import { ChatSettingsDropdown } from '@/components/chat/ChatSettingsDropdown';
+import { ChatSettings, DEFAULT_CHAT_SETTINGS } from '@/types/chat';
 
 interface MessageItemProps {
   message: Message;
@@ -164,7 +166,7 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false); // New state for streaming
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null); // Track which message is streaming
   const [loadingHighlight, setLoadingHighlight] = useState(false);
-  const [highlightUrl, setHighlightUrl] = useState<string | null>(null);
+
   
   const titleInputRef = useRef<HTMLInputElement>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -176,6 +178,45 @@ export default function ChatPage() {
     bbox: number[];
     sourceIndex: number;
   } | null>(null);
+  const [chatSettings, setChatSettings] = useState<ChatSettings>(DEFAULT_CHAT_SETTINGS);
+const [updatingSettings, setUpdatingSettings] = useState(false);
+
+useEffect(() => {
+  const loadChatSettings = async () => {
+    try {
+      const response = await chatApi.getChatSettings(chatId);
+      setChatSettings(response.settings);
+    } catch (error) {
+      console.error('Failed to load chat settings:', error);
+      setChatSettings(DEFAULT_CHAT_SETTINGS);
+    }
+  };
+
+  if (chatId) {
+    loadChatSettings();
+  }
+}, [chatId]);
+
+const handleSettingsUpdate = async (settings: ChatSettings) => {
+  setUpdatingSettings(true);
+  try {
+    await chatApi.updateChatSettings(chatId, settings);
+    setChatSettings(settings);
+    toast({
+      type: 'success',
+      description: 'Settings updated successfully!'
+    });
+  } catch (error) {
+    console.error('Failed to update chat settings:', error);
+    toast({
+      type: 'error',
+      description: 'Failed to update settings. Please try again.'
+    });
+    throw error;
+  } finally {
+    setUpdatingSettings(false);
+  }
+};
 
   useEffect(() => {
     const fetchChatDetails = async () => {
@@ -361,46 +402,54 @@ const handleCloseSidebar = () => {
           )}
         </div>
       </div>
-      
-      <div className={`p-4 bg-background transition-all duration-300 ${sidebarOpen ? 'mr-150' : ''}`}>
-        <form onSubmit={handleSendMessage} className="mx-auto max-w-3xl px-4"> {/* Added px-4 to match messages */}
-          <div className="flex flex-row gap-2">
-            <Textarea
-              placeholder="Ask a question about your documents..."
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              className="resize-none min-h-[40px] max-h-[140px] rounded-2xl"
-              disabled={sending}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage(e);
-                }
-              }}
-            />
-            <Button 
-              type={streaming ? "button" : "submit"} 
-              disabled={(!streaming && !inputValue.trim())}
-              onClick={streaming ? handleStopStreaming : undefined}
-              className='rounded-xl'
-            >
-              {streaming ? (
-                <>
-                  <XIcon className="mr-2 h-4 w-4" />
-                  Stop
-                </>
-              ) : sending ? (
-                <>
-                  <LoaderIcon className="animate-spin mr-2 h-4 w-4" />
-                  Sending...
-                </>
-              ) : (
-                'Send'
-              )}
-            </Button>
+    
+          <div className={`p-4 bg-background transition-all duration-300 ${sidebarOpen ? 'mr-150' : ''}`}>
+            <form onSubmit={handleSendMessage} className="mx-auto max-w-3xl px-4">
+              <div className="flex flex-row gap-2">
+                {/* Settings Dropdown - positioned to the left */}
+                <div className="flex items-end pb-1">
+                  <ChatSettingsDropdown
+                    currentSettings={chatSettings}
+                    onSettingsUpdate={handleSettingsUpdate}
+                    isUpdating={updatingSettings}
+                  />
+                </div>
+                
+                <Textarea
+                  placeholder="Ask a question about your documents..."
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  className="resize-none min-h-[40px] max-h-[140px] rounded-2xl"
+                  disabled={sending}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage(e);
+                    }
+                  }}
+                />
+                <Button 
+                  type={streaming ? "button" : "submit"} 
+                  disabled={(!streaming && !inputValue.trim())}
+                  onClick={streaming ? handleStopStreaming : undefined}
+                >
+                  {streaming ? (
+                    <>
+                      <XIcon className="mr-2 h-4 w-4" />
+                      Stop
+                    </>
+                  ) : sending ? (
+                    <>
+                      <LoaderIcon className="animate-spin mr-2 h-4 w-4" />
+                      Sending...
+                    </>
+                  ) : (
+                    'Send'
+                  )}
+                </Button>
+              </div>
+            </form>
           </div>
-        </form>
-      </div>
       <DocumentViewerSidebar
         isOpen={sidebarOpen}
         onClose={handleCloseSidebar}

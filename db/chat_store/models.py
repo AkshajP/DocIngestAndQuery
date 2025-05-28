@@ -59,6 +59,40 @@ class Feedback(BaseModel):
     feedback_type: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+
+class ChatSettings(BaseModel):
+    """Chat-specific query settings"""
+    # Search method settings
+    use_tree_search: bool = Field(default=False, description="Use hierarchical tree search")
+    use_hybrid_search: bool = Field(default=True, description="Use hybrid (vector + BM25) search")
+    vector_weight: float = Field(default=0.65, min=0.0, max=1.0, description="Weight for vector scores in hybrid search")
+    
+    # Retrieval settings
+    top_k: int = Field(default=10, ge=1, le=50, description="Number of chunks to retrieve")
+    tree_level_filter: Optional[List[int]] = Field(default=None, description="Filter by tree levels (None = all levels)")
+    content_types: Optional[List[str]] = Field(default=None, description="Filter by content types")
+    
+    # Model settings
+    llm_model: Optional[str] = Field(default='llama3.2', description="Override LLM model")
+    
+    # UI preferences
+    show_sources: bool = Field(default=True, description="Show sources by default")
+    auto_scroll: bool = Field(default=True, description="Auto-scroll to new messages")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "use_tree_search": False,
+                "use_hybrid_search": True,
+                "vector_weight": 0.4,
+                "top_k": 15,
+                "tree_level_filter": [0],  # Only original chunks
+                "llm_model": "llama3.2",
+                "show_sources": True,
+                "auto_scroll": True
+            }
+        }
+
 class Chat(BaseModel):
     """Chat session information"""
     chat_id: str
@@ -68,7 +102,7 @@ class Chat(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     state: ChatState = ChatState.OPEN
-    settings: Dict[str, Any] = Field(default_factory=dict)
+    settings: ChatSettings = Field(default_factory=ChatSettings)
     
 class ChatDocument(BaseModel):
     """Document loaded in a chat"""
@@ -84,3 +118,4 @@ class UserCaseAccess(BaseModel):
     case_id: str
     role: UserRole
     created_at: datetime = Field(default_factory=datetime.now)
+

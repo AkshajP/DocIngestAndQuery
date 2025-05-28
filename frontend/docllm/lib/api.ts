@@ -69,13 +69,31 @@ import {
   
   // Chat APIs
   export const chatApi = {
-    createChat: async (data: ChatCreateRequest): Promise<ChatDetailResponse> => {
-      return fetchWithErrorHandling<ChatDetailResponse>(`/chats`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
-    }
-    ,
+    getChatSettings: async (chatId: string): Promise<{ settings: ChatSettings }> => {
+    return fetchWithErrorHandling<{ settings: ChatSettings }>(`/chats/${chatId}/settings`);
+  },
+
+  updateChatSettings: async (chatId: string, settings: ChatSettings): Promise<{ status: string; settings: ChatSettings }> => {
+    return fetchWithErrorHandling<{ status: string; settings: ChatSettings }>(`/chats/${chatId}/settings`, {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    });
+  },
+
+  // Update existing functions to include settings
+  createChat: async (data: ChatCreateRequest & { settings?: ChatSettings }): Promise<ChatDetailResponse> => {
+    return fetchWithErrorHandling<ChatDetailResponse>(`/chats`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
+  updateChat: async (chatId: string, data: { title?: string; settings?: ChatSettings }): Promise<ChatDetailResponse> => {
+    return fetchWithErrorHandling<ChatDetailResponse>(`/chats/${chatId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  },
     
     listChats: async (params?: { limit?: number; offset?: number }): Promise<ChatListResponse> => {
       const queryParams = new URLSearchParams();
@@ -88,13 +106,6 @@ import {
     
     getChat: async (chatId: string): Promise<ChatDetailResponse> => {
       return fetchWithErrorHandling<ChatDetailResponse>(`/chats/${chatId}`);
-    },
-    
-    updateChat: async (chatId: string, data: { title: string }): Promise<ChatDetailResponse> => {
-      return fetchWithErrorHandling<ChatDetailResponse>(`/chats/${chatId}`, {
-        method: "PATCH",
-        body: JSON.stringify(data),
-      });
     },
     
     deleteChat: async (chatId: string): Promise<{ status: string; message: string }> => {

@@ -92,9 +92,10 @@ class QueryEngine:
         case_id: str,
         chat_id: None,
         user_id: None,
+        chat_settings: Optional[Any] = None,  # Add this parameter
         use_tree: bool = False,
-        use_hybrid: Optional[bool] = None,  # New parameter
-        vector_weight: Optional[float] = None,  # New parameter
+        use_hybrid: Optional[bool] = None,
+        vector_weight: Optional[float] = None,
         top_k: int = 10,
         tree_level_filter: Optional[List[int]] = None,
         chat_history: str = "",
@@ -107,6 +108,7 @@ class QueryEngine:
             question: User question
             document_ids: List of document IDs to search
             case_id: Case ID for filtering
+            chat_settings: Chat-specific settings that override other parameters
             use_tree: Whether to use tree-based retrieval
             use_hybrid: Whether to use hybrid search (None = auto-detect)
             vector_weight: Weight for vector scores (0-1, None = use default)
@@ -118,6 +120,16 @@ class QueryEngine:
         Returns:
             Query result with answer and sources
         """
+        
+        # Apply chat settings if provided, with fallback to passed parameters
+        if chat_settings:
+            use_tree = getattr(chat_settings, 'use_tree_search', use_tree)
+            use_hybrid = getattr(chat_settings, 'use_hybrid_search', use_hybrid)
+            vector_weight = getattr(chat_settings, 'vector_weight', vector_weight)
+            top_k = getattr(chat_settings, 'top_k', top_k)
+            tree_level_filter = getattr(chat_settings, 'tree_level_filter', tree_level_filter)
+            model_override = getattr(chat_settings, 'llm_model', model_override) or model_override
+        
         if not document_ids:
             return {
                 "status": "error",
@@ -157,8 +169,6 @@ class QueryEngine:
         )
         
         retrieval_time = time.time() - retrieval_start
-        
-        
         
         if not chunks:
             return {
