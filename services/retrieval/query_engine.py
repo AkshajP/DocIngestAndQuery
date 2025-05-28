@@ -13,6 +13,7 @@ from core.config import get_config
 from db.document_store.repository import DocumentMetadataRepository
 from db.vector_store.adapter import VectorStoreAdapter
 from services.ml.embeddings import EmbeddingService
+from .chunk_deduplicator import ChunkDeduplicator
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class QueryEngine:
             base_url=self.config.ollama.base_url,
             temperature=self.config.ollama.temperature
         )
+        self.chunk_deduplicator = ChunkDeduplicator()
         
         # Create RAG prompt template
         self.query_prompt = PromptTemplate(
@@ -312,118 +314,148 @@ class QueryEngine:
         query_embedding: List[float],
         case_id: str,
         document_ids: List[str],
-        query_text: Optional[str] = None,  # New parameter for BM25
+        query_text: Optional[str] = None,
         use_tree: bool = False,
-        use_hybrid: bool = False,  # New parameter
-        vector_weight: float = 0.5,  # New parameter
+        use_hybrid: bool = False,
+        vector_weight: float = 0.5,
         top_k: int = 5,
         tree_level_filter: Optional[List[int]] = None
     ) -> List[Dict[str, Any]]:
         """
         Retrieve relevant chunks using vector similarity or hybrid search.
-        
-        Args:
-            query_embedding: Query embedding vector
-            case_id: Case ID
-            document_ids: List of document IDs to search
-            query_text: Original query text for BM25 search
-            use_tree: Whether to use tree-based retrieval
-            use_hybrid: Whether to use hybrid search
-            vector_weight: Weight for vector scores (0-1)
-            top_k: Number of chunks to retrieve
-            tree_level_filter: Filter by tree level
-            
-        Returns:
-            List of relevant chunks
+        Enhanced with robust deduplication.
         """
-        # Case ID should be provided as a list for the vector store
         case_ids = [case_id]
         
         if use_hybrid and not query_text:
             logger.warning("Hybrid search requested but no query_text provided. Using vector-only search.")
             use_hybrid = False
         
+        all_chunks = []
+        
         if use_tree:
             # Enhanced tree-based retrieval with hybrid search
-            # First find relevant summary nodes, potentially using hybrid search
-            content_types = None
-            chunk_types = None
-            
-            # Set up chunk_types filter if tree_level_filter is specified
-            if tree_level_filter is not None:
-                if 0 in tree_level_filter and len(tree_level_filter) == 1:
-                    # Filter for original chunks only
-                    chunk_types = ["original"]
-                elif 0 not in tree_level_filter and tree_level_filter:
-                    # Filter for summary chunks only
-                    chunk_types = ["summary"]
-            
-            # Search for summary nodes, potentially with hybrid search
-            chunks = self.vector_store.search(
+            all_chunks = self._tree_based_retrieval(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                case_ids=case_ids,
+                document_ids=document_ids,
+                top_k=top_k,
+                tree_level_filter=tree_level_filter,
+                use_hybrid=use_hybrid,
+                vector_weight=vector_weight
+            )
+        else:
+            # Flat retrieval
+            all_chunks = self._flat_retrieval(
+                query_embedding=query_embedding,
+                query_text=query_text,
+                case_ids=case_ids,
+                document_ids=document_ids,
+                top_k=top_k,
+                tree_level_filter=tree_level_filter,
+                use_hybrid=use_hybrid,
+                vector_weight=vector_weight
+            )
+        
+        # Apply enhanced deduplication
+        deduplicated_chunks = self.chunk_deduplicator.deduplicate_chunks(
+            chunks=all_chunks,
+            top_k=top_k,
+            score_merge_strategy="max"  # Use max score when chunks are found via multiple methods
+        )
+        
+        return deduplicated_chunks
+    
+    def _tree_based_retrieval(
+        self,
+        query_embedding: List[float],
+        query_text: Optional[str],
+        case_ids: List[str],
+        document_ids: List[str],
+        top_k: int,
+        tree_level_filter: Optional[List[int]],
+        use_hybrid: bool,
+        vector_weight: float
+    ) -> List[Dict[str, Any]]:
+        """
+        Enhanced tree-based retrieval that collects chunks from multiple sources
+        before deduplication.
+        """
+        all_chunks = []
+        
+        # Set up chunk_types filter if tree_level_filter is specified
+        summary_chunk_types = None
+        original_chunk_types = None
+        
+        if tree_level_filter is not None:
+            if 0 in tree_level_filter and len(tree_level_filter) == 1:
+                # Only original chunks requested
+                original_chunk_types = ["original"]
+                summary_chunk_types = []  # Skip summary search
+            elif 0 not in tree_level_filter and tree_level_filter:
+                # Only summary chunks requested
+                summary_chunk_types = ["summary"]
+                original_chunk_types = []  # Skip original search
+            else:
+                # Mixed levels requested
+                summary_chunk_types = ["summary"]
+                original_chunk_types = ["original"]
+        else:
+            # Default: search both summary and original
+            summary_chunk_types = ["summary"]
+            original_chunk_types = ["original"]
+        
+        # Search for summary nodes first (if requested)
+        if summary_chunk_types:
+            summary_chunks = self.vector_store.search(
                 query_embedding=query_embedding,
                 case_ids=case_ids,
                 document_ids=document_ids,
                 content_types=["text", "table"],
-                chunk_types=chunk_types,
+                chunk_types=summary_chunk_types,
                 tree_levels=tree_level_filter,
-                top_k=top_k,
+                top_k=top_k * 2,  # Get more to account for deduplication
                 use_hybrid=use_hybrid,
                 vector_weight=vector_weight,
                 query_text=query_text
             )
             
-            # If we found summary nodes, get their children
-            if chunks:
-                logger.info(f"Found {len(chunks)} summary nodes for hierarchical retrieval")
-                
-                # Get original chunks related to the summaries
-                # Use hybrid search here too if enabled
-                original_chunks = self.vector_store.search(
-                    query_embedding=query_embedding,
-                    case_ids=case_ids,
-                    document_ids=document_ids,
-                    content_types=content_types,
-                    chunk_types=["original"],
-                    top_k=top_k,
-                    use_hybrid=use_hybrid,
-                    vector_weight=vector_weight,
-                    query_text=query_text
-                )
-                
-                # Combine chunks, prioritizing original content
-                # We'll give a slight boost to original chunks in the ranking
-                all_chunks = original_chunks + chunks
-                
-                # Sort by score (highest first) and deduplicate if needed
-                seen_content = set()
-                filtered_chunks = []
-                
-                for chunk in sorted(all_chunks, key=lambda x: x.get("score", 0), reverse=True):
-                    # Use a short hash of content to deduplicate
-                    content_hash = hash(chunk.get("content", "")[:100])
-                    if content_hash not in seen_content:
-                        seen_content.add(content_hash)
-                        filtered_chunks.append(chunk)
-                        
-                        if len(filtered_chunks) >= top_k:
-                            break
-                
-                return filtered_chunks
-            else:
-                # Fall back to flat retrieval if no summary nodes found
-                logger.info("No summary nodes found, falling back to flat retrieval")
-                return self._flat_retrieval(
-                    query_embedding=query_embedding,
-                    query_text=query_text,
-                    case_ids=case_ids,
-                    document_ids=document_ids,
-                    top_k=top_k,
-                    tree_level_filter=tree_level_filter,
-                    use_hybrid=use_hybrid,
-                    vector_weight=vector_weight
-                )
-        else:
-            # Flat retrieval - just get original chunks
+            # Tag chunks with search context
+            for chunk in summary_chunks:
+                chunk["search_context"] = "tree_summary"
+                if not chunk.get("search_method"):
+                    chunk["search_method"] = "hybrid" if use_hybrid else "vector"
+            
+            all_chunks.extend(summary_chunks)
+            logger.info(f"Found {len(summary_chunks)} summary nodes for hierarchical retrieval")
+        
+        # Search for original chunks (if requested)  
+        if original_chunk_types:
+            original_chunks = self.vector_store.search(
+                query_embedding=query_embedding,
+                case_ids=case_ids,
+                document_ids=document_ids,
+                content_types=["text", "table"],
+                chunk_types=original_chunk_types,
+                top_k=top_k * 2,  # Get more to account for deduplication
+                use_hybrid=use_hybrid,
+                vector_weight=vector_weight,
+                query_text=query_text
+            )
+            
+            # Tag chunks with search context
+            for chunk in original_chunks:
+                chunk["search_context"] = "tree_original"
+                if not chunk.get("search_method"):
+                    chunk["search_method"] = "hybrid" if use_hybrid else "vector"
+            
+            all_chunks.extend(original_chunks)
+            logger.info(f"Found {len(original_chunks)} original chunks for hierarchical retrieval")
+        
+        # If no chunks found, fall back to flat retrieval
+        if not all_chunks:
+            logger.info("No chunks found in tree search, falling back to flat retrieval")
             return self._flat_retrieval(
                 query_embedding=query_embedding,
                 query_text=query_text,
@@ -434,6 +466,8 @@ class QueryEngine:
                 use_hybrid=use_hybrid,
                 vector_weight=vector_weight
             )
+        
+        return all_chunks
     
     def _flat_retrieval(
         self, 
@@ -441,49 +475,42 @@ class QueryEngine:
         case_ids: List[str],
         document_ids: List[str],
         top_k: int,
-        query_text: Optional[str] = None,  # New parameter
+        query_text: Optional[str] = None,
         tree_level_filter: Optional[List[int]] = None,
-        use_hybrid: bool = False,  # New parameter
-        vector_weight: float = 0.5  # New parameter
+        use_hybrid: bool = False,
+        vector_weight: float = 0.5
     ) -> List[Dict[str, Any]]:
         """
-        Perform flat retrieval of original chunks.
-        
-        Args:
-            query_embedding: Query embedding vector
-            case_ids: List of case IDs
-            document_ids: List of document IDs
-            top_k: Number of chunks to retrieve
-            query_text: Original query text for BM25 search
-            tree_level_filter: Optional filter by tree level
-            use_hybrid: Whether to use hybrid search
-            vector_weight: Weight for vector scores (0-1)
-            
-        Returns:
-            List of relevant chunks
+        Perform flat retrieval of chunks with enhanced metadata tagging.
         """
         # Set up chunk_types filter based on tree_level_filter
         chunk_types = None
         if tree_level_filter is not None:
             if 0 in tree_level_filter and len(tree_level_filter) == 1:
-                # Filter for original chunks only
                 chunk_types = ["original"]
             elif 0 not in tree_level_filter and tree_level_filter:
-                # Filter for summary chunks only
                 chunk_types = ["summary"]
                 
-        return self.vector_store.search(
+        chunks = self.vector_store.search(
             query_embedding=query_embedding,
             case_ids=case_ids,
             document_ids=document_ids,
             content_types=["text", "table"],
             chunk_types=chunk_types,
             tree_levels=tree_level_filter,
-            top_k=top_k,
+            top_k=top_k * 2,  # Get more to account for potential deduplication
             use_hybrid=use_hybrid,
             vector_weight=vector_weight,
             query_text=query_text
         )
+        
+        # Tag chunks with search context
+        for chunk in chunks:
+            chunk["search_context"] = "flat"
+            if not chunk.get("search_method"):
+                chunk["search_method"] = "hybrid" if use_hybrid else "vector"
+        
+        return chunks
     
     def process_with_llm(
         self,

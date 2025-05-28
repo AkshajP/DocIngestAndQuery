@@ -11,6 +11,9 @@ import { Input } from '@/components/ui/input';
 import { toast } from '@/components/toast';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import DocumentViewerSidebar from '@/components/DocumentViewerSidebar';
 import { 
   LoaderIcon, 
   PencilIcon, 
@@ -32,8 +35,9 @@ interface MessageItemProps {
 export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: MessageItemProps) {
   const [showSources, setShowSources] = useState(false);
   
+  
   return (
-    <div className={`py-4 ${message.role === 'assistant' ? 'bg-muted/30' : ''}`}>
+    <div className={`py-4 ${message.role === 'assistant' ? '' : 'bg-muted'}`}>
       <div className="max-w-3xl mx-auto px-4">
         <div className="flex items-start gap-2">
           <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
@@ -58,54 +62,65 @@ export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }
   <div className="mt-2">
     <Button 
       variant="ghost" 
+      className='rounded-xl '
       size="sm"
       onClick={() => setShowSources(!showSources)}
     >
-      {showSources ? 'Hide Sources' : 'Show Sources'}
+      {showSources ? (
+    <>
+      Hide Sources <ChevronUp className="w-4 h-4" />
+    </>
+  ) : (
+    <>
+      Show Sources <ChevronDown className="w-4 h-4" />
+    </>
+  )}
     </Button>
     
-    {showSources && (
-      <div className="mt-2 space-y-2">
-        {message.sources.map((source, index) => {
-          // Extract the boxes from the correct location (metadata.original_boxes)
-          const originalBoxes = source.metadata?.original_boxes || [];
-          const firstBox = originalBoxes.length > 0 ? originalBoxes[0] : null;
-          const pageNumber = firstBox?.original_page_index || 0;
-          const bbox = firstBox?.bbox || [0, 0, 0, 0];
-          
-          // Check if this is a summary chunk
-          const isOriginalChunk = source.chunk_type === 'original';
-          
-          return (
-            <div key={index} className="p-2 border rounded-md text-sm">
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-medium">
-                  {source.chunk_type === 'summary' ? 'Internally Processed Document' : `Source ${index + 1}`}
-                </span>
-                
-                {/* Only show "View in document" button for original chunks */}
-                {isOriginalChunk && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onViewSource && onViewSource(
-                      source.document_id, 
-                      index, 
-                      pageNumber,
-                      bbox
-                    )}
-                  >
-                    <FileTextIcon className="h-4 w-4 mr-1" />
-                    View in document
-                  </Button>
-                )}
+    <AnimatePresence>
+      {showSources && (
+        <motion.div
+          key="sources"
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          exit={{ opacity: 0, height: 0 }}
+          transition={{ duration: 0.2, ease: 'easeInOut' }}
+          className="mt-2 space-y-2 overflow-hidden "
+        >
+          {message.sources.map((source, index) => {
+            const originalBoxes = source.metadata?.original_boxes || [];
+            const firstBox = originalBoxes.length > 0 ? originalBoxes[0] : null;
+            const pageNumber = firstBox?.original_page_index || 0;
+            const bbox = firstBox?.bbox || [0, 0, 0, 0];
+            const isOriginalChunk = source.chunk_type === 'original';
+
+            return (
+              <div key={index} className="p-2 border rounded-xl text-sm">
+                <div className="flex items-center justify-between m-1">
+                  <span className="font-medium">
+                    {source.chunk_type === 'summary' ? 'Internally Processed Document' : `Source ${index + 1}`}
+                  </span>
+                  {isOriginalChunk && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        onViewSource &&
+                        onViewSource(source.document_id, index, pageNumber, bbox)
+                      }
+                    >
+                      <FileTextIcon className="h-4 w-4 mr-1" />
+                      View in document
+                    </Button>
+                  )}
+                </div>
+                <p className="text-muted-foreground m-1">{source.content}</p>
               </div>
-              <p className="text-muted-foreground">{source.content}</p>
-            </div>
-          );
-        })}
-      </div>
-    )}
+            );
+          })}
+        </motion.div>
+      )}
+    </AnimatePresence>
   </div>
 )}
               
@@ -154,6 +169,13 @@ export default function ChatPage() {
   const titleInputRef = useRef<HTMLInputElement>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const streamControlRef = useRef<{close: () => void} | null>(null); // Ref to control stream
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarDocument, setSidebarDocument] = useState<{
+    documentId: string;
+    pageNumber: number;
+    bbox: number[];
+    sourceIndex: number;
+  } | null>(null);
 
   useEffect(() => {
     const fetchChatDetails = async () => {
@@ -251,29 +273,38 @@ export default function ChatPage() {
   };
 
   const handleViewSource = async (
-    documentId: string, 
-    sourceIndex: number, 
-    pageNumber: number,
-    bbox: number[]
-  ) => {
-    try {
-      setLoadingHighlight(true);
-      
-      // Construct the URL with specific page and annotation information
-      const url = `/documents/viewer/${documentId}?page=${pageNumber + 1}&bbox=${bbox.join(',')}&sourceIndex=${sourceIndex}`;
-      
-      // Open in a new tab
-      window.open(url, '_blank');
-    } catch (error) {
-      console.error('Failed to open document viewer:', error);
-      toast({
-        type: 'error',
-        description: 'Failed to open document viewer. Please try again.'
-      });
-    } finally {
-      setLoadingHighlight(false);
-    }
-  };
+  documentId: string, 
+  sourceIndex: number, 
+  pageNumber: number,
+  bbox: number[]
+) => {
+  try {
+    setLoadingHighlight(true);
+    
+    // Open the sidebar with the document info
+    setSidebarDocument({
+      documentId,
+      pageNumber: pageNumber + 1, // Convert to 1-based for display
+      bbox,
+      sourceIndex
+    });
+    setSidebarOpen(true);
+  } catch (error) {
+    console.error('Failed to open document viewer:', error);
+    toast({
+      type: 'error',
+      description: 'Failed to open document viewer. Please try again.'
+    });
+  } finally {
+    setLoadingHighlight(false);
+  }
+};
+
+const handleCloseSidebar = () => {
+  setSidebarOpen(false);
+  setSidebarDocument(null);
+};
+
 
   return (
     <div className="flex flex-col h-screen">
@@ -307,8 +338,8 @@ export default function ChatPage() {
         )}
       </header>
       
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl pb-20">
+      <div className={`flex-1 overflow-y-auto transition-all duration-300 ${sidebarOpen ? 'mr-150' : ''}`}>
+        <div className="mx-auto max-w-3xl pb-4">
           {loadingMessages && messages.length === 0 ? (
             <div className="flex justify-center items-center h-full">
               <LoaderIcon className="animate-spin mr-2" />
@@ -331,14 +362,14 @@ export default function ChatPage() {
         </div>
       </div>
       
-      <div className="border-t p-4 fixed bottom-0 left-0 right-0 bg-background">
-        <form onSubmit={handleSendMessage} className="mx-auto max-w-3xl">
-          <div className="flex gap-2">
+      <div className={`p-4 bg-background transition-all duration-300 ${sidebarOpen ? 'mr-150' : ''}`}>
+        <form onSubmit={handleSendMessage} className="mx-auto max-w-3xl px-4"> {/* Added px-4 to match messages */}
+          <div className="flex flex-row gap-2">
             <Textarea
               placeholder="Ask a question about your documents..."
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              className="resize-none min-h-[60px]"
+              className="resize-none min-h-[40px] max-h-[140px] rounded-2xl"
               disabled={sending}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -351,6 +382,7 @@ export default function ChatPage() {
               type={streaming ? "button" : "submit"} 
               disabled={(!streaming && !inputValue.trim())}
               onClick={streaming ? handleStopStreaming : undefined}
+              className='rounded-xl'
             >
               {streaming ? (
                 <>
@@ -369,6 +401,14 @@ export default function ChatPage() {
           </div>
         </form>
       </div>
+      <DocumentViewerSidebar
+        isOpen={sidebarOpen}
+        onClose={handleCloseSidebar}
+        documentId={sidebarDocument?.documentId || null}
+        pageNumber={sidebarDocument?.pageNumber || 1}
+        bbox={sidebarDocument?.bbox}
+        sourceIndex={sidebarDocument?.sourceIndex}
+      />
     </div>
   );
 }

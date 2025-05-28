@@ -90,6 +90,8 @@ services:
       - "8000:3000"
     depends_on:
       - standalone
+    networks:
+      - app-network
 
   # Add backend service
   backend:
