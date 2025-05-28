@@ -182,6 +182,9 @@ class ChatManager:
             chats_list.extend(chats)
             total += count
         
+        # Sort combined results by updated_at DESC to ensure proper chronological order
+        chats_list.sort(key=lambda chat: chat.updated_at, reverse=True)
+    
         return chats_list, total
     
     def delete_chat(

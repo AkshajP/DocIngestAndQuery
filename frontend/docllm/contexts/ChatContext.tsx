@@ -1,9 +1,10 @@
-// contexts/ChatContext.tsx
+// contexts/ChatContext.tsx - Updated with correct regenerate API calls
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, ReactNode, useRef} from 'react';
 import { chatApi } from '@/lib/api';
-import { ChatSummary, Message, QueryRequest, ChatSettings, DEFAULT_CHAT_SETTINGS } from '@/types/chat';
+import { ChatSummary, Message, QueryRequest, ChatSettings, DEFAULT_CHAT_SETTINGS, MessageRole } from '@/types/chat';
+import { toast } from '@/components/toast';
 
 interface ChatContextType {
   chats: ChatSummary[];
@@ -15,12 +16,18 @@ interface ChatContextType {
   createChat: (documentIds: string[], title?: string) => Promise<string>;
   updateChatDocuments: (chatId: string, add: string[], remove: string[]) => Promise<void>;
   sendMessage: (chatId: string, question: string) => Promise<void>;
+  sendStreamingMessage: (chatId: string, question: string) => Promise<void>;
   updateChatTitle: (chatId: string, title: string) => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
-  regenerateResponse: (chatId: string, messageId: string) => Promise<void>;
+  regenerateResponse: (chatId: string, messageId: string, settings?: any) => Promise<void>;
+  streamRegenerateResponse: (chatId: string, messageId: string, settings?: any) => Promise<void>;
   getChatTitle: (chatId: string) => Promise<string>;
   highlightDocumentSource: (chatId: string, messageId: string, documentId: string) => Promise<string>;
-
+  cancelStreaming: () => void;
+  chatSettings: ChatSettings;
+  updatingSettings: boolean;
+  loadChatSettings: (chatId: string) => Promise<void>;
+  updateChatSettings: (chatId: string, settings: ChatSettings) => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -37,36 +44,36 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const streamControlRef = useRef(null);
 
-
   const loadChatSettings = async (chatId: string) => {
-  try {
-    const response = await chatApi.getChatSettings(chatId);
-    setChatSettings(response.settings);
-  } catch (error) {
-    console.error('Failed to load chat settings:', error);
-    setChatSettings(DEFAULT_CHAT_SETTINGS);
-  }
-};
-const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
-  setUpdatingSettings(true);
-  try {
-    await chatApi.updateChatSettings(chatId, settings);
-    setChatSettings(settings);
-    toast({
-      type: 'success',
-      description: 'Settings updated successfully!'
-    });
-  } catch (error) {
-    console.error('Failed to update chat settings:', error);
-    toast({
-      type: 'error',
-      description: 'Failed to update settings. Please try again.'
-    });
-    throw error;
-  } finally {
-    setUpdatingSettings(false);
-  }
-};
+    try {
+      const response = await chatApi.getChatSettings(chatId);
+      setChatSettings(response.settings);
+    } catch (error) {
+      console.error('Failed to load chat settings:', error);
+      setChatSettings(DEFAULT_CHAT_SETTINGS);
+    }
+  };
+
+  const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
+    setUpdatingSettings(true);
+    try {
+      await chatApi.updateChatSettings(chatId, settings);
+      setChatSettings(settings);
+      toast({
+        type: 'success',
+        description: 'Settings updated successfully!'
+      });
+    } catch (error) {
+      console.error('Failed to update chat settings:', error);
+      toast({
+        type: 'error',
+        description: 'Failed to update settings. Please try again.'
+      });
+      throw error;
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
 
   const fetchChats = useCallback(async () => {
     try {
@@ -156,7 +163,7 @@ const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
       // Create temporary message
       const tempMessage: Message = {
         id: `temp-${Date.now()}`,
-        role: 'user',
+        role: MessageRole.USER,
         content: question,
         created_at: new Date().toISOString(),
       };
@@ -216,23 +223,148 @@ const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
     }
   }, []);
   
-  const regenerateResponse = useCallback(async (chatId: string, messageId: string) => {
+  // FIXED: Correct regenerate response implementation (non-streaming)
+  const regenerateResponse = useCallback(async (
+    chatId: string, 
+    messageId: string, 
+    settings?: any
+  ) => {
     try {
       setLoadingMessages(true);
-      // Find the previous message to get the question
-      const questionIndex = messages.findIndex(m => m.id === messageId) - 1;
-      if (questionIndex >= 0) {
-        const question = messages[questionIndex].content;
-        const response = await chatApi.submitQuery(chatId, { question });
-        // Refresh messages
-        await fetchChatMessages(chatId);
-      }
+      
+      // Use the correct regenerate API endpoint
+      const response = await chatApi.regenerateResponse(chatId, messageId, settings);
+      
+      // Refresh messages to get the updated response
+      await fetchChatMessages(chatId);
     } catch (error) {
       console.error('Failed to regenerate response:', error);
+      throw error;
     } finally {
       setLoadingMessages(false);
     }
-  }, [messages, fetchChatMessages]);
+  }, [fetchChatMessages]);
+
+  // NEW: Streaming regenerate response
+  const streamRegenerateResponse = useCallback(async (
+    chatId: string, 
+    messageId: string, 
+    settings?: any
+  ) => {
+    if (!chatId || !messageId) return;
+    
+    try {
+      // Find the message being regenerated and clear its content
+      setMessages(prev => 
+        prev.map(msg => 
+          msg.id === messageId 
+            ? { 
+                ...msg, 
+                content: '', 
+                sources: undefined,
+                processing_stats: { streaming: true }
+              } 
+            : msg
+        )
+      );
+      
+      setStreaming(true);
+      
+      const controller = await chatApi.streamRegenerateResponse(
+        chatId,
+        messageId,
+        settings || {},
+        {
+          onStart: (data) => {
+            console.log('Regeneration started:', data);
+          },
+          
+          onToken: (token) => {
+            // Update the message content with new token
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === messageId 
+                  ? { ...msg, content: msg.content + token } 
+                  : msg
+              )
+            );
+          },
+          
+          onSources: (sources) => {
+            // Add sources to the message
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === messageId 
+                  ? { ...msg, sources } 
+                  : msg
+              )
+            );
+          },
+          
+          onComplete: (data) => {
+            // Update message with final stats
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === messageId 
+                  ? { 
+                      ...msg, 
+                      processing_stats: {
+                        streaming: false,
+                        time_taken: data.time_taken,
+                        token_count: data.token_count
+                      }
+                    } 
+                  : msg
+              )
+            );
+            
+            setStreaming(false);
+            setStreamController(null);
+            
+            // Fetch the official messages from the server after completion
+            fetchChatMessages(chatId);
+          },
+          
+          onError: (error) => {
+            console.error('Regeneration stream error:', error);
+            
+            // Update message to show error state
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === messageId 
+                  ? { 
+                      ...msg, 
+                      content: 'Error regenerating response. Please try again.',
+                      processing_stats: { streaming: false, error: true }
+                    } 
+                  : msg
+              )
+            );
+            
+            setStreaming(false);
+            setStreamController(null);
+            
+            // Show error toast
+            toast({
+              type: 'error',
+              description: error.error || 'Error regenerating response'
+            });
+          }
+        }
+      );
+      
+      setStreamController(controller);
+    } catch (error) {
+      console.error('Failed to start regeneration streaming:', error);
+      setStreaming(false);
+      
+      // Show error toast
+      toast({
+        type: 'error',
+        description: 'Failed to regenerate response. Please try again.'
+      });
+    }
+  }, [fetchChatMessages]);
   
   const getChatTitle = useCallback(async (chatId: string) => {
     try {
@@ -265,7 +397,7 @@ const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
     // Add user message to state
     const userMessage: Message = {
       id: tempUserMsgId,
-      role: 'user',
+      role: MessageRole.USER,
       content: question,
       created_at: new Date().toISOString(),
     };
@@ -401,12 +533,13 @@ const updateChatSettings = async (chatId: string, settings: ChatSettings) => {
       createChat,
       updateChatDocuments,
       sendMessage,
+      sendStreamingMessage,
       updateChatTitle,
       deleteChat,
       regenerateResponse,
+      streamRegenerateResponse, // NEW: Export streaming regenerate
       getChatTitle,
       highlightDocumentSource,
-      sendStreamingMessage,
       cancelStreaming,
       chatSettings,
       updatingSettings,

@@ -1,4 +1,4 @@
-// frontend/docllm/app/(main)/chat/[id]/page.tsx
+// frontend/docllm/app/(main)/chat/[id]/page.tsx - Updated with streaming regenerate
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
@@ -32,9 +32,10 @@ interface MessageItemProps {
   onRegenerate?: () => void;
   onViewSource?: (documentId: string, sourceIndex: number, pageNumber: number, bbox: number[]) => void;
   isStreaming?: boolean;
+  isRegenerating?: boolean;  // NEW: Track if this specific message is being regenerated
 }
 
-export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }: MessageItemProps) {
+export function MessageItem({ message, onRegenerate, onViewSource, isStreaming, isRegenerating }: MessageItemProps) {
   const [showSources, setShowSources] = useState(false);
   
   
@@ -51,11 +52,14 @@ export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }
                 {message.content}
               </ReactMarkdown>
               
-              {isStreaming && message.role === 'assistant' && (
+              {(isStreaming || isRegenerating) && message.role === 'assistant' && (
                 <div className="typing-indicator inline-flex items-center mt-1">
                   <span className="dot"></span>
                   <span className="dot"></span>
                   <span className="dot"></span>
+                  {isRegenerating && (
+                    <span className="ml-2 text-xs text-muted-foreground">Regenerating...</span>
+                  )}
                 </div>
               )}
             </div>
@@ -127,13 +131,15 @@ export function MessageItem({ message, onRegenerate, onViewSource, isStreaming }
 )}
               
             
-            {message.role === 'assistant' && onRegenerate && !isStreaming && (
+            {message.role === 'assistant' && onRegenerate && !isStreaming && !isRegenerating && (
               <div className="mt-2">
                 <Button 
                   variant="outline" 
                   size="sm"
                   onClick={onRegenerate}
+                  className="flex items-center gap-1"
                 >
+                  <RefreshCwIcon className="h-4 w-4" />
                   Regenerate response
                 </Button>
               </div>
@@ -153,7 +159,7 @@ export default function ChatPage() {
     loadingMessages, 
     fetchChatMessages, 
     sendStreamingMessage,
-    regenerateResponse,
+    streamRegenerateResponse, // Use streaming regenerate
     updateChatTitle,
     highlightDocumentSource
   } = useChat();
@@ -165,6 +171,7 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [streaming, setStreaming] = useState(false); // New state for streaming
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null); // Track which message is streaming
+  const [regeneratingMessageId, setRegeneratingMessageId] = useState<string | null>(null); // NEW: Track regenerating message
   const [loadingHighlight, setLoadingHighlight] = useState(false);
 
   
@@ -301,15 +308,32 @@ const handleSettingsUpdate = async (settings: ChatSettings) => {
     }
   };
 
+  // UPDATED: Use streaming regenerate response
   const handleRegenerate = async (messageId: string) => {
     try {
-      await regenerateResponse(chatId, messageId);
+      setRegeneratingMessageId(messageId);
+      
+      // Use the chat settings as the default, but allow them to be overridden
+      // You could show a settings dialog here if needed
+      const regenerateSettings = {
+        use_tree_search: chatSettings.use_tree_search,
+        use_hybrid_search: chatSettings.use_hybrid_search,
+        vector_weight: chatSettings.vector_weight,
+        top_k: chatSettings.top_k,
+        tree_level_filter: chatSettings.tree_level_filter,
+        llm_model: chatSettings.llm_model,
+        stream: true  // Force streaming for better UX
+      };
+      
+      await streamRegenerateResponse(chatId, messageId, regenerateSettings);
     } catch (error) {
       console.error('Failed to regenerate response:', error);
       toast({
         type: 'error',
         description: 'Failed to regenerate response. Please try again.'
       });
+    } finally {
+      setRegeneratingMessageId(null);
     }
   };
 
@@ -393,6 +417,7 @@ const handleCloseSidebar = () => {
                   key={message.id}
                   message={message}
                   isStreaming={streamingMessageId === message.id}
+                  isRegenerating={regeneratingMessageId === message.id} // NEW: Pass regenerating state
                   onRegenerate={message.role === 'assistant' ? () => handleRegenerate(message.id) : undefined}
                   onViewSource={handleViewSource}
                 />
