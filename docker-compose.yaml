@@ -94,52 +94,52 @@ services:
       - app-network
 
   # Add backend service
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: docrag-backend
-    restart: always
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
-      - 1.1.1.1
-    ports:
-      - "9000:9000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - DOCRAG_DATABASE_HOST=postgres
-      - DOCRAG_DATABASE_PORT=5432
-      - DOCRAG_VECTOR_DB_HOST=standalone
-      - DOCRAG_VECTOR_DB_PORT=19530
-      # Database connection details
-      - DATABASE_URL=postgresql://youruser:yourpassword@postgres:5432/yourdb
-      # Milvus connection (multiple formats in case backend expects different var names)
-      - MILVUS_HOST=standalone
-      - MILVUS_PORT=19530
-      - MILVUS_URI=http://standalone:19530
-      - VECTOR_DB_HOST=standalone
-      - VECTOR_DB_PORT=19530
-      # Optional: Set Hugging Face cache directory
-      - HF_HOME=/root/.cache/huggingface
-      # Optional: Disable telemetry during model downloads
-      - HF_HUB_DISABLE_TELEMETRY=1
-      - OLLAMA_HOST=host.docker.internal     # Add this line
-      - OLLAMA_PORT=11434                    # Add this line  
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434 
-    depends_on:
-      - postgres
-      - standalone
-    volumes:
-      # Your existing document store volume
-      - ./document_store:/app/document_store
-      # New: Cache volume for downloaded models (persists across container restarts)
-      - model_cache:/root/.cache
-      # Optional: If you want to cache pip packages as well
-      - pip_cache:/root/.cache/pip
-    networks:
-      - app-network
+  # backend:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.backend
+  #   container_name: docrag-backend
+  #   restart: always
+  #   dns:
+  #     - 8.8.8.8
+  #     - 8.8.4.4
+  #     - 1.1.1.1
+  #   ports:
+  #     - "9000:9000"
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   environment:
+  #     - DOCRAG_DATABASE_HOST=postgres
+  #     - DOCRAG_DATABASE_PORT=5432
+  #     - DOCRAG_VECTOR_DB_HOST=standalone
+  #     - DOCRAG_VECTOR_DB_PORT=19530
+  #     # Database connection details
+  #     - DATABASE_URL=postgresql://youruser:yourpassword@postgres:5432/yourdb
+  #     # Milvus connection (multiple formats in case backend expects different var names)
+  #     - MILVUS_HOST=standalone
+  #     - MILVUS_PORT=19530
+  #     - MILVUS_URI=http://standalone:19530
+  #     - VECTOR_DB_HOST=standalone
+  #     - VECTOR_DB_PORT=19530
+  #     # Optional: Set Hugging Face cache directory
+  #     - HF_HOME=/root/.cache/huggingface
+  #     # Optional: Disable telemetry during model downloads
+  #     - HF_HUB_DISABLE_TELEMETRY=1
+  #     - OLLAMA_HOST=host.docker.internal     # Add this line
+  #     - OLLAMA_PORT=11434                    # Add this line  
+  #     - OLLAMA_BASE_URL=http://host.docker.internal:11434 
+  #   depends_on:
+  #     - postgres
+  #     - standalone
+  #   volumes:
+  #     # Your existing document store volume
+  #     - ./document_store:/app/document_store
+  #     # New: Cache volume for downloaded models (persists across container restarts)
+  #     - model_cache:/root/.cache
+  #     # Optional: If you want to cache pip packages as well
+  #     - pip_cache:/root/.cache/pip
+  #   networks:
+  #     - app-network
     # network_mode: "host"
     # Optional: Add health check
     # healthcheck:
@@ -157,21 +157,21 @@ services:
       #         capabilities: [gpu]
 
   # Add frontend service
-  frontend:
-    build:
-      context: ./frontend/docllm
-      dockerfile: ../../Dockerfile.frontend
-    container_name: docrag-frontend
-    restart: always
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_BASE_URL=http://localhost:9000/ai
-      - BACKEND_API_URL=http://backend:9000/
-    networks:
-      - app-network
-    depends_on:
-      - backend
+  # frontend:
+  #   build:
+  #     context: ./frontend/docllm
+  #     dockerfile: ../../Dockerfile.frontend
+  #   container_name: docrag-frontend
+  #   restart: always
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - NEXT_PUBLIC_API_BASE_URL=http://localhost:9000/ai
+  #     - BACKEND_API_URL=http://backend:9000/
+  #   networks:
+  #     - app-network
+  #   depends_on:
+  #     - backend
 
 volumes:
   etcd:

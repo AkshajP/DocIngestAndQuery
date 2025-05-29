@@ -20,15 +20,18 @@ class ChatHistoryService:
     and formatting for different contexts.
     """
     
-    def __init__(self, config=None):
+    def __init__(self, config=None, chat_repo=None):
         """
         Initialize the chat history service.
         
         Args:
             config: Optional configuration override
+            chat_repo: Optional injected ChatRepository instance
         """
         self.config = config or get_config()
-        self.chat_repo = ChatRepository()
+        
+        # Use injected repository or create new one (for backward compatibility)
+        self.chat_repo = chat_repo or ChatRepository()
         
         # Initialize LLM for summarization
         self.llm = OllamaLLM(

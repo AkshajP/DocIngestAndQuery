@@ -10,19 +10,24 @@ from services.chat.manager import ChatManager
 from services.chat.history import ChatHistoryService
 from db.document_store.repository import DocumentMetadataRepository
 from api.routes.access_control import get_current_user, get_current_case, validate_user_case_access
+from core.service_manager import get_initialized_service_manager
 
 logger = logging.getLogger(__name__)
 
 class ChatContext:
     """Context object that holds chat-related information and services"""
     
-    def __init__(self, chat_id: str, user_id: str, case_id: str):
+    def __init__(self, chat_id: str, user_id: str, case_id: str, service_manager=None):
         self.chat_id = chat_id
         self.user_id = user_id
         self.case_id = case_id
-        self.chat_service = ChatManager()
-        self.history_service = ChatHistoryService()
-        self.doc_repository = DocumentMetadataRepository()
+        
+        # Use shared services from service manager
+        self.service_manager = service_manager or get_initialized_service_manager()
+        self.chat_service = self.service_manager.chat_manager
+        self.history_service = self.service_manager.chat_history_service
+        self.doc_repository = self.service_manager.document_repository
+        
         self._chat = None
         self._chat_settings = None
         self._document_ids = None
@@ -115,7 +120,13 @@ async def get_chat_context(
     _: bool = Depends(validate_user_case_access)
 ) -> ChatContext:
     """Dependency that provides validated chat context"""
-    return ChatContext(chat_id=chat_id, user_id=user_id, case_id=case_id)
+    service_manager = get_initialized_service_manager()
+    return ChatContext(
+        chat_id=chat_id, 
+        user_id=user_id, 
+        case_id=case_id,
+        service_manager=service_manager
+    )
 
 def create_chat_detail_response(
     context: ChatContext,
@@ -176,8 +187,24 @@ async def auto_generate_title_task(
     except Exception as e:
         logger.error(f"Error auto-generating title: {str(e)}")
 
-def validate_document_access(document_ids: List[str], case_id: str) -> List[str]:
-    """Validate that documents belong to the case"""
-    # This could be expanded with proper document access validation
-    # For now, just return the document_ids as-is
-    return document_ids
+# def validate_document_access(document_ids: List[str], case_id: str) -> List[str]:
+#     """Validate that documents belong to the case"""
+#     # This could be expanded with proper document access validation
+#     # For now, just return the document_ids as-is
+#     return document_ids
+
+def get_chat_manager():
+    """FastAPI dependency for ChatManager"""
+    return get_initialized_service_manager().chat_manager
+
+def get_chat_history_service():
+    """FastAPI dependency for ChatHistoryService"""
+    return get_initialized_service_manager().chat_history_service
+
+def get_query_engine():
+    """FastAPI dependency for QueryEngine"""
+    return get_initialized_service_manager().query_engine
+
+def get_user_case_repository():
+    """FastAPI dependency for UserCaseRepository"""
+    return get_initialized_service_manager().user_case_repository

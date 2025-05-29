@@ -17,18 +17,22 @@ class ChatManager:
     and chat state transitions.
     """
     
-    def __init__(self, config=None):
+    def __init__(self, config=None, chat_repo=None, doc_repo=None, history_service=None):
         """
         Initialize the chat manager.
         
         Args:
             config: Optional configuration override
+            chat_repo: Optional injected ChatRepository instance
+            doc_repo: Optional injected DocumentMetadataRepository instance
+            history_service: Optional injected ChatHistoryService instance
         """
         self.config = config or get_config()
-        self.chat_repo = ChatRepository()
-        self.doc_repo = DocumentMetadataRepository()
-        self.history_service = ChatHistoryService()
         
+        # Use injected services or create new ones (for backward compatibility)
+        self.chat_repo = chat_repo or ChatRepository()
+        self.doc_repo = doc_repo or DocumentMetadataRepository()
+        self.history_service = history_service or ChatHistoryService()
         logger.info("Chat manager initialized")
     
     def create_chat(
