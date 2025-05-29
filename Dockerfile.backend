@@ -62,16 +62,19 @@ with open('"'"'config.json'"'"', '"'"'r'"'"') as f:\n\
     config = json.load(f)\n\
 config['"'"'vector_db'"'"']['"'"'host'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_HOST'"'"', '"'"'localhost'"'"')\n\
 config['"'"'vector_db'"'"']['"'"'port'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_PORT'"'"', '"'"'19530'"'"')\n\
+# Add Celery config updates\n\
+if '"'"'celery'"'"' not in config:\n\
+    config['"'"'celery'"'"'] = {}\n\
+config['"'"'celery'"'"']['"'"'broker_url'"'"'] = os.getenv('"'"'CELERY_BROKER_URL'"'"', '"'"'redis://localhost:6379/0'"'"')\n\
+config['"'"'celery'"'"']['"'"'result_backend'"'"'] = os.getenv('"'"'CELERY_RESULT_BACKEND'"'"', '"'"'redis://localhost:6379/1'"'"')\n\
 with open('"'"'config.json'"'"', '"'"'w'"'"') as f:\n\
     json.dump(config, f, indent=2)\n\
-host = config['"'"'vector_db'"'"']['"'"'host'"'"']\n\
-port = config['"'"'vector_db'"'"']['"'"'port'"'"']\n\
-print('"'"'Updated vector_db config: host='"'"' + host + '"'"', port='"'"' + port)\n\
+print('"'"'Updated configuration with environment variables'"'"')\n\
 "\n\
     fi\n\
 }\n\
 \n\
-# Function to download models with retry logic\n\
+# Function to download models with retry logic (existing)\n\
 download_models() {\n\
     local max_retries=3\n\
     local retry_delay=30\n\
@@ -92,24 +95,28 @@ download_models() {\n\
     done\n\
     \n\
     echo "Warning: Failed to download models after $max_retries attempts"\n\
-    echo "Application will start but may not function properly"\n\
     return 1\n\
 }\n\
 \n\
-# Update configuration with environment variables\n\
+# Update configuration\n\
 update_config\n\
 \n\
-# Check if models are already downloaded\n\
-if [ ! -f "/root/.cache/models_downloaded" ]; then\n\
-    echo "Models not found. Downloading on first startup..."\n\
-    download_models\n\
+# Check if running as Celery worker\n\
+if [ "$CELERY_WORKER" == "true" ]; then\n\
+    echo "Starting Celery worker..."\n\
+    exec python worker.py\n\
 else\n\
-    echo "Models already downloaded, skipping download"\n\
-fi\n\
-\n\
-# Start the application\n\
-echo "Starting application..."\n\
-exec uvicorn main:app --host 0.0.0.0 --port 9000' > /app/startup.sh
+    # Download models only for web server\n\
+    if [ ! -f "/root/.cache/models_downloaded" ]; then\n\
+        echo "Models not found. Downloading on first startup..."\n\
+        download_models\n\
+    else\n\
+        echo "Models already downloaded, skipping download"\n\
+    fi\n\
+    \n\
+    echo "Starting web application..."\n\
+    exec uvicorn main:app --host 0.0.0.0 --port 9000\n\
+fi' > /app/startup.sh
 
 # Make startup script executable
 RUN chmod +x /app/startup.sh

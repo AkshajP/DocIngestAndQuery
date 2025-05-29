@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from core.service_manager import get_service_manager
 from api.routes import document_routes, admin_routes
 import logging 
-from api.routes import chat_query_routes, chat_management_routes
+from api.routes import chat_query_routes, chat_management_routes, test_celery_routes
 logging.getLogger().setLevel(logging.DEBUG)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -58,6 +58,7 @@ app.include_router(
 # app.include_router(chat_routes.router)
 app.include_router(document_routes.router)
 app.include_router(admin_routes.router) 
+app.include_router(test_celery_routes.router)
 
 
 @app.get("/")

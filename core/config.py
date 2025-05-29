@@ -62,6 +62,21 @@ class DatabaseConfig(BaseModel):
     password: str = "yourpassword"
     connection_timeout: int = 30
 
+class CeleryConfig(BaseModel):
+    """Configuration for Celery task queue"""
+    broker_url: str = "redis://localhost:6379/0"
+    result_backend: str = "redis://localhost:6379/1"
+    task_serializer: str = "json"
+    accept_content: List[str] = ["json"]
+    result_serializer: str = "json"
+    timezone: str = "UTC"
+    enable_utc: bool = True
+    task_track_started: bool = True
+    task_time_limit: int = 30 * 60  # 30 minutes
+    task_soft_time_limit: int = 25 * 60  # 25 minutes
+    worker_prefetch_multiplier: int = 1
+    worker_max_tasks_per_child: int = 1000
+
 
 class AppConfig(BaseModel):
     """Main application configuration"""
@@ -73,6 +88,7 @@ class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    celery: CeleryConfig = Field(default_factory=CeleryConfig) 
     
     @classmethod
     def from_json(cls, file_path: str) -> "AppConfig":
@@ -136,6 +152,11 @@ class AppConfig(BaseModel):
             'POSTGRES_DB': ('database', 'dbname'),
             'POSTGRES_USER': ('database', 'user'),
             'POSTGRES_PASSWORD': ('database', 'password'),
+            
+             # Celery configuration
+            'CELERY_BROKER_URL': ('celery', 'broker_url'),
+            'CELERY_RESULT_BACKEND': ('celery', 'result_backend'),
+            'REDIS_URL': ('celery', 'broker_url'),
         }
         
         # Handle standard environment variables

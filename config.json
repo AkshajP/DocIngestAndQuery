@@ -30,5 +30,19 @@
       "chunk_overlap": 200,
       "max_tree_levels": 3,
       "language": "en"
+    },
+    "celery": {
+      "broker_url": "redis://localhost:6379/0",
+      "result_backend": "redis://localhost:6379/1",
+      "task_serializer": "json",
+      "accept_content": ["json"],
+      "result_serializer": "json",
+      "timezone": "UTC",
+      "enable_utc": true,
+      "task_track_started": true,
+      "task_time_limit": 3600,
+      "task_soft_time_limit": 1500,
+      "worker_prefetch_multiplier": 1,
+      "worker_max_tasks_per_child": 1000
     }
   }
