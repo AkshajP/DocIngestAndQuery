@@ -149,43 +149,67 @@ async def list_all_documents(
     
     
 @router.post("/documents/upload")
-async def upload_new_document(
+async def upload_document_with_tasks(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     case_id: str = Form("default"),
-    admin_user: str = Depends(get_admin_user)
+    user_id: str = Form("system"),
+    celery_task_ids: Optional[str] = Form(None)  # JSON string of stage->task_id mapping
 ):
-    """Upload and process a new document."""
-    temp_file_path = f"/tmp/{file.filename}"
+    """Upload document with optional Celery task integration"""
     
-    try:
-        # Save uploaded file to temporary location
-        content = await file.read()
-        with open(temp_file_path, "wb") as f:
-            f.write(content)
-        
-        # Create document ID
-        timestamp = int(time.time())
-        safe_name = ''.join(c for c in file.filename.split('.')[0].replace(' ', '_') 
-                          if c.isalnum() or c == '_')
-        document_id = f"doc_{timestamp}_{safe_name}"
-        
-        # Queue document processing in background
-        background_tasks.add_task(
-            upload_document,
-            file_path=temp_file_path,
-            document_id=document_id,
-            case_id=case_id
-        )
-        
-        return {
-            "status": "pending",
-            "message": "Document upload initiated. Processing will start shortly.",
-            "document_id": document_id
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+    # Parse Celery task IDs if provided
+    task_ids = {}
+    if celery_task_ids:
+        try:
+            import json
+            task_ids = json.loads(celery_task_ids)
+        except:
+            task_ids = {}
+    
+    # Save uploaded file
+    temp_file_path = f"/tmp/{file.filename}"
+    content = await file.read()
+    with open(temp_file_path, "wb") as f:
+        f.write(content)
+    
+    # Initialize upload service
+    upload_service = PersistentUploadService()
+    
+    # Queue document processing in background with task integration
+    background_tasks.add_task(
+        process_document_with_tasks,
+        file_path=temp_file_path,
+        case_id=case_id,
+        user_id=user_id,
+        celery_task_ids=task_ids
+    )
+    
+    return {
+        "status": "accepted",
+        "message": "Document processing started",
+        "case_id": case_id,
+        "user_id": user_id
+    }
+    
+async def process_document_with_tasks(
+    file_path: str,
+    case_id: str,
+    user_id: str,
+    celery_task_ids: dict
+):
+    """Background task for document processing with Celery integration"""
+    upload_service = PersistentUploadService()
+    
+    result = upload_service.upload_document(
+        file_path=file_path,
+        case_id=case_id,
+        user_id=user_id,
+        celery_task_ids=celery_task_ids
+    )
+    
+    logger.info(f"Document processing completed: {result['status']}")
+
 
 @router.post("/documents/{document_id}/retry")
 async def retry_document_processing(
@@ -735,3 +759,58 @@ async def cleanup_all_stale_locks(
     except Exception as e:
         logger.error(f"Error cleaning up stale locks: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to cleanup stale locks: {str(e)}")
+    
+@router.post("/documents/{document_id}/pause")
+async def pause_document_processing(
+    document_id: str,
+    stage: Optional[str] = Query(None, description="Specific stage to pause")
+):
+    """Pause document processing"""
+    upload_service = PersistentUploadService()
+    result = upload_service.pause_document_processing(document_id, stage)
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+@router.post("/documents/{document_id}/resume")
+async def resume_document_processing(
+    document_id: str,
+    stage: Optional[str] = Query(None, description="Specific stage to resume")
+):
+    """Resume paused document processing"""
+    upload_service = PersistentUploadService()
+    result = upload_service.resume_document_processing(document_id, stage)
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+@router.post("/documents/{document_id}/cancel")
+async def cancel_document_processing(
+    document_id: str,
+    stage: Optional[str] = Query(None, description="Specific stage to cancel")
+):
+    """Cancel document processing"""
+    upload_service = PersistentUploadService()
+    result = upload_service.cancel_document_processing(document_id, stage)
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+@router.get("/documents/{document_id}/tasks")
+async def get_document_task_status(document_id: str):
+    """Get comprehensive task status for a document"""
+    upload_service = PersistentUploadService()
+    result = upload_service.get_document_task_status(document_id)
+    
+    if result["status"] == "error":
+        raise HTTPException(status_code=404, detail=result["error"])
+    
+    return result
+
+

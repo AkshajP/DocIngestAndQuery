@@ -127,7 +127,7 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=postgresql://youruser:yourpassword@postgres:5432/yourdb
+      - CELERY_RESULT_BACKEND=postgresql://youruser:yourpassword@localhost:5433/yourdb
       - CELERY_WORKER=true  # Flag to start as worker
     depends_on:
       - postgres

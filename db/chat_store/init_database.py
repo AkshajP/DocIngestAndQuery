@@ -158,6 +158,91 @@ def create_tables(conn):
         conn.rollback()
         return False
 
+def create_task_tables(conn):
+    """
+    Create task-related tables for Celery integration.
+    """
+    try:
+        with conn.cursor() as cursor:
+            # Create document_tasks table for Celery task management
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS document_tasks (
+                    id SERIAL PRIMARY KEY,
+                    
+                    -- Core identifiers
+                    document_id VARCHAR(50) NOT NULL,
+                    case_id VARCHAR(50) NOT NULL,
+                    user_id VARCHAR(50) NOT NULL,
+                    processing_stage VARCHAR(50) NOT NULL,
+                    celery_task_id VARCHAR(50) UNIQUE NOT NULL,
+                    
+                    -- Task information
+                    task_name VARCHAR(100) NOT NULL,
+                    task_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    progress INTEGER DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
+                    
+                    -- Control flags
+                    can_pause BOOLEAN DEFAULT true,
+                    can_resume BOOLEAN DEFAULT false,
+                    can_cancel BOOLEAN DEFAULT true,
+                    
+                    -- Timestamps
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    started_at TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    completed_at TIMESTAMP,
+                    
+                    -- Worker information
+                    worker_hostname VARCHAR(255),
+                    worker_pid INTEGER,
+                    
+                    -- Flexible data storage
+                    error_details TEXT,
+                    checkpoint_data JSONB,
+                    task_metadata JSONB DEFAULT '{}',
+                    
+                    -- Ensure one task per stage per document
+                    UNIQUE(document_id, processing_stage)
+                )
+            """)
+            
+            # Create indices for efficient querying
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_tasks_document_id ON document_tasks(document_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_tasks_case_id ON document_tasks(case_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_tasks_status ON document_tasks(task_status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_tasks_celery_id ON document_tasks(celery_task_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_tasks_stage ON document_tasks(processing_stage)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_tasks_updated_at ON document_tasks(updated_at)")
+            
+            # Auto-update timestamp trigger function (if not exists)
+            cursor.execute("""
+                CREATE OR REPLACE FUNCTION update_updated_at_column()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    NEW.updated_at = NOW();
+                    RETURN NEW;
+                END;
+                $$ language 'plpgsql'
+            """)
+            
+            # Drop existing trigger if it exists and create new one
+            cursor.execute("DROP TRIGGER IF EXISTS update_document_tasks_updated_at ON document_tasks")
+            cursor.execute("""
+                CREATE TRIGGER update_document_tasks_updated_at
+                    BEFORE UPDATE ON document_tasks
+                    FOR EACH ROW
+                    EXECUTE FUNCTION update_updated_at_column()
+            """)
+            
+            conn.commit()
+            logger.info("Task tables created successfully")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error creating task tables: {str(e)}")
+        conn.rollback()
+        return False
+
 def test_connection():
     """Test database connection and create tables if needed"""
     config = get_config().database
@@ -179,12 +264,21 @@ def test_connection():
         
         logger.info("Successfully connected to database")
         
-        # Create tables
+        # Create existing tables
         if create_tables(conn):
-            logger.info("Database initialization completed successfully")
+            logger.info("Chat tables created successfully")
         else:
-            logger.error("Failed to create tables")
+            logger.error("Failed to create chat tables")
+            return False
             
+        # Create task tables
+        if create_task_tables(conn):
+            logger.info("Task tables created successfully")
+        else:
+            logger.error("Failed to create task tables")
+            return False
+            
+        logger.info("Database initialization completed successfully")
         conn.close()
         return True
         
