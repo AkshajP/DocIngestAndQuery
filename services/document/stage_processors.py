@@ -81,6 +81,46 @@ class StageProcessor(ABC):
             state_manager.update_task_progress(stage, progress, message)
         except Exception as e:
             logger.debug(f"Could not update task progress (normal if not using Celery): {str(e)}")
+        
+        # Also update Celery task progress if task instance available
+        try:
+            task_instance = getattr(state_manager, '_current_task_instance', None)
+            if hasattr(task_instance, 'update_progress'):
+                task_instance.update_progress(progress, message)
+        except Exception as e:
+            logger.debug(f"Could not update Celery task progress: {str(e)}")
+    
+    def _check_task_cancellation(self, state_manager: ProcessingStateManager, stage: str):
+        """Check if task has been cancelled"""
+        try:
+            task_instance = getattr(state_manager, '_current_task_instance', None)
+            if hasattr(task_instance, 'check_for_cancellation'):
+                task_instance.check_for_cancellation()
+        except Exception as e:
+            logger.debug(f"Could not check task cancellation: {str(e)}")
+    
+    def _save_task_checkpoint(
+        self, 
+        state_manager: ProcessingStateManager, 
+        checkpoint_name: str, 
+        data: Dict[str, Any]
+    ):
+        """Save checkpoint for pause/resume"""
+        try:
+            task_instance = getattr(state_manager, '_current_task_instance', None)
+            if hasattr(task_instance, 'save_checkpoint'):
+                task_instance.save_checkpoint(checkpoint_name, data)
+        except Exception as e:
+            logger.debug(f"Could not save checkpoint: {str(e)}")
+    
+    def _prepare_context_for_celery(self, context: Dict[str, Any], state_manager: ProcessingStateManager):
+        """Prepare context for Celery task execution"""
+        # Store task instance reference if available
+        task_instance = context.get('task_instance')
+        if task_instance:
+            state_manager._current_task_instance = task_instance
+        
+        return context
     
     def _mark_completed(self, state_manager: ProcessingStateManager, stage: str) -> bool:
         """Mark task and stage as completed"""

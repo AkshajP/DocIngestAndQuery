@@ -766,13 +766,25 @@ async def pause_document_processing(
     stage: Optional[str] = Query(None, description="Specific stage to pause")
 ):
     """Pause document processing"""
-    upload_service = PersistentUploadService()
-    result = upload_service.pause_document_processing(document_id, stage)
-    
-    if result["status"] == "error":
-        raise HTTPException(status_code=400, detail=result["error"])
-    
-    return result
+    try:
+        from services.celery.task_utils import TaskControlManager
+        
+        control_manager = TaskControlManager()
+        result = control_manager.pause_document_tasks(document_id, stage)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+    except Exception as e:
+        # Fallback to original implementation
+        upload_service = PersistentUploadService()
+        result = upload_service.pause_document_processing(document_id, stage)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
 
 @router.post("/documents/{document_id}/resume")
 async def resume_document_processing(
@@ -780,13 +792,25 @@ async def resume_document_processing(
     stage: Optional[str] = Query(None, description="Specific stage to resume")
 ):
     """Resume paused document processing"""
-    upload_service = PersistentUploadService()
-    result = upload_service.resume_document_processing(document_id, stage)
-    
-    if result["status"] == "error":
-        raise HTTPException(status_code=400, detail=result["error"])
-    
-    return result
+    try:
+        from services.celery.task_utils import TaskControlManager
+        
+        control_manager = TaskControlManager()
+        result = control_manager.resume_document_tasks(document_id, stage)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+    except Exception as e:
+        # Fallback to original implementation
+        upload_service = PersistentUploadService()
+        result = upload_service.resume_document_processing(document_id, stage)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
 
 @router.post("/documents/{document_id}/cancel")
 async def cancel_document_processing(
@@ -794,23 +818,47 @@ async def cancel_document_processing(
     stage: Optional[str] = Query(None, description="Specific stage to cancel")
 ):
     """Cancel document processing"""
-    upload_service = PersistentUploadService()
-    result = upload_service.cancel_document_processing(document_id, stage)
-    
-    if result["status"] == "error":
-        raise HTTPException(status_code=400, detail=result["error"])
-    
-    return result
+    try:
+        from services.celery.task_utils import TaskControlManager
+        
+        control_manager = TaskControlManager()
+        result = control_manager.cancel_document_tasks(document_id, stage)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+    except Exception as e:
+        # Fallback to original implementation
+        upload_service = PersistentUploadService()
+        result = upload_service.cancel_document_processing(document_id, stage)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
 
 @router.get("/documents/{document_id}/tasks")
 async def get_document_task_status(document_id: str):
     """Get comprehensive task status for a document"""
-    upload_service = PersistentUploadService()
-    result = upload_service.get_document_task_status(document_id)
-    
-    if result["status"] == "error":
-        raise HTTPException(status_code=404, detail=result["error"])
-    
-    return result
+    try:
+        from services.celery.task_utils import DocumentTaskOrchestrator
+        
+        orchestrator = DocumentTaskOrchestrator()
+        result = orchestrator.get_document_tasks_status(document_id)
+        
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        
+        return result
+    except Exception as e:
+        # Fallback to original implementation
+        upload_service = PersistentUploadService()
+        result = upload_service.get_document_task_status(document_id)
+        
+        if result["status"] == "error":
+            raise HTTPException(status_code=404, detail=result["error"])
+        
+        return result
 
 

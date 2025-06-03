@@ -91,6 +91,19 @@ def setup_celery_logging():
     
     logging.config.dictConfig(LOGGING_CONFIG)
 
+# Import tasks to register them with Celery
+# This ensures tasks are discovered by workers
+def register_tasks():
+    """Register all tasks with Celery"""
+    try:
+        from services.celery.tasks import document_tasks
+        logger.info("Document processing tasks registered successfully")
+    except Exception as e:
+        logger.warning(f"Could not register document tasks: {str(e)}")
+
+# Register tasks on app creation
+register_tasks()
+
 # Initialize logging
 setup_celery_logging()
 

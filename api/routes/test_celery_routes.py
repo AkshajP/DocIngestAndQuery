@@ -224,6 +224,162 @@ async def test_upload_integration():
             "message": "Upload integration test failed",
             "error": str(e)
         }
+
+@router.post("/celery-upload-integration")
+async def test_celery_upload_integration():
+    """Test the enhanced upload service with Celery integration"""
+    try:
+        from services.document.persistent_upload_service import PersistentUploadService
+        import tempfile
+        import os
+        import asyncio
+        
+        # Create a small test PDF file
+        test_content = b"%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n2 0 obj\n<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>\nendobj\n3 0 obj\n<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n>>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000010 00000 n \n0000000053 00000 n \n0000000125 00000 n \ntrailer\n<<\n/Size 4\n/Root 1 0 R\n>>\nstartxref\n205\n%%EOF"
+        
+        # Create temporary file with a longer-lived approach for async processing
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', prefix='celery_test_')
+        temp_file.write(test_content)
+        temp_file.close()  # Close file but keep it on disk
+        temp_file_path = temp_file.name
+        
+        try:
+            # Initialize upload service
+            upload_service = PersistentUploadService()
+            
+            # Test with Celery tasks enabled
+            result = upload_service.upload_document(
+                file_path=temp_file_path,
+                case_id="test_case_celery_123",
+                user_id="test_user_456",
+                metadata={"test": True, "is_celery_test": True},
+                use_celery=True  # Enable Celery tasks
+            )
+            
+            document_id = result.get("document_id")
+            
+            # For async processing, don't immediately delete the temp file
+            # Let the file be cleaned up later or by the system
+            cleanup_scheduled = False
+            
+            if result.get("async_mode"):
+                # Schedule cleanup after a delay for async processing
+                def delayed_cleanup():
+                    try:
+                        if os.path.exists(temp_file_path):
+                            os.unlink(temp_file_path)
+                            logger.info(f"Delayed cleanup of temp file: {temp_file_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not clean up temp file: {str(e)}")
+                
+                # Use asyncio to schedule cleanup (after giving tasks time to start)
+                import threading
+                threading.Timer(10.0, delayed_cleanup).start()  # Cleanup after 10 seconds
+                cleanup_scheduled = True
+            
+            # Get task status
+            task_status = upload_service.get_document_task_status(document_id)
+            
+            return {
+                "status": "success",
+                "message": "Celery upload integration test submitted",
+                "upload_result": result,
+                "task_status": task_status,
+                "cleanup_info": {
+                    "temp_file_kept": cleanup_scheduled,
+                    "cleanup_scheduled": cleanup_scheduled,
+                    "temp_file_path": temp_file_path if cleanup_scheduled else "deleted"
+                },
+                "features_tested": [
+                    "Celery task chain creation",
+                    "Async document processing",
+                    "Task status tracking",
+                    "Chain ID generation",
+                    "File persistence for async processing"
+                ]
+            }
+        
+        except Exception as e:
+            # Clean up on error
+            try:
+                if os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+            except:
+                pass
+            raise e
+                
+    except Exception as e:
+        logger.error(f"Celery upload integration test failed: {str(e)}")
+        return {
+            "status": "error",
+            "message": "Celery upload integration test failed",
+            "error": str(e)
+        }
+
+@router.post("/celery/task-chain")
+async def test_task_chain():
+    """Test creating a Celery task chain"""
+    try:
+        from services.celery.task_utils import DocumentTaskOrchestrator
+        
+        # Initialize orchestrator
+        orchestrator = DocumentTaskOrchestrator()
+        
+        # Create test context (only JSON-serializable data)
+        test_context = {
+            "file_path": "test_file.pdf",
+            "stored_file_path": "test_file.pdf",
+            "doc_dir": "document_store/test_chain_doc_123",
+            "is_test": True,
+            "metadata": {"test": True}
+        }
+        # Note: storage_adapter excluded as it's not JSON serializable
+        
+        # Create processing chain
+        chain_result = orchestrator.create_processing_chain(
+            document_id="test_chain_doc_123",
+            case_id="test_case_456",
+            user_id="test_user_789",
+            context=test_context
+        )
+        
+        return {
+            "status": "success",
+            "message": "Task chain created successfully",
+            "chain_id": chain_result.id,
+            "chain_status": chain_result.status
+        }
+        
+    except Exception as e:
+        logger.error(f"Task chain test failed: {str(e)}")
+        return {
+            "status": "error",
+            "message": "Task chain test failed",
+            "error": str(e)
+        }
+
+@router.get("/celery/chain-status/{chain_id}")
+async def get_chain_status(chain_id: str):
+    """Get status of a task chain"""
+    try:
+        from services.celery.task_utils import DocumentTaskOrchestrator
+        
+        orchestrator = DocumentTaskOrchestrator()
+        chain_status = orchestrator.get_task_status(chain_id)
+        
+        return {
+            "status": "success",
+            "chain_id": chain_id,
+            "chain_status": chain_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting chain status: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
 @router.post("/quick-validation")
 async def quick_validation_test():
     """Quick validation that all fixes are working"""

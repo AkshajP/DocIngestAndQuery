@@ -70,10 +70,11 @@ class PersistentUploadService:
         user_id: str = "system",
         metadata: Optional[Dict[str, Any]] = None,
         force_restart: bool = False,
-        celery_task_ids: Optional[Dict[str, str]] = None
+        celery_task_ids: Optional[Dict[str, str]] = None,
+        use_celery: bool = False  # New parameter to enable Celery
     ) -> Dict[str, Any]:
         """
-        Upload and process a document through the complete pipeline with Celery task integration.
+        Upload and process a document through the complete pipeline with optional Celery integration.
         
         Args:
             file_path: Path to the document file
@@ -83,6 +84,7 @@ class PersistentUploadService:
             metadata: Optional metadata about the document
             force_restart: If True, restart processing from the beginning
             celery_task_ids: Optional mapping of stage names to Celery task IDs
+            use_celery: If True, use Celery tasks for async processing
             
         Returns:
             Dictionary with processing status and information
@@ -141,8 +143,13 @@ class PersistentUploadService:
                 doc_dir, metadata, celery_task_ids
             )
             
-            # Execute processing pipeline with Celery integration
-            pipeline_result = self._execute_processing_pipeline_with_tasks(state_manager, context)
+            # Choose processing method based on use_celery parameter
+            if use_celery:
+                pipeline_result = self._execute_async_processing_pipeline(state_manager, context)
+            else:
+                # Add storage adapter for synchronous processing
+                context["storage_adapter"] = self.storage_adapter
+                pipeline_result = self._execute_processing_pipeline_with_tasks(state_manager, context)
             
             # Calculate total processing time
             total_processing_time = time.time() - process_start_time
@@ -170,6 +177,84 @@ class PersistentUploadService:
                 "processing_time": time.time() - process_start_time
             }
     
+    def _execute_async_processing_pipeline(
+        self,
+        state_manager: ProcessingStateManager,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Execute processing pipeline using Celery tasks (async).
+        """
+        from services.celery.task_utils import DocumentTaskOrchestrator
+        
+        document_id = context['document_id']
+        case_id = context['case_id']
+        user_id = context['user_id']
+        
+        logger.info(f"Starting async processing pipeline for document {document_id}")
+        
+        try:
+            # CRITICAL: Ensure file is stored before async processing
+            stored_file_path = context.get('stored_file_path')
+            original_file_path = context.get('file_path')
+            
+            # Verify the stored file exists and is accessible
+            if not stored_file_path or not self.storage_adapter.file_exists(stored_file_path):
+                # If stored file doesn't exist, we need to store it from the original
+                if original_file_path and os.path.exists(original_file_path):
+                    logger.warning(f"Stored file not found, copying from original: {original_file_path}")
+                    
+                    # Create target path
+                    doc_dir = context['doc_dir']
+                    target_path = os.path.join(doc_dir, "original.pdf")
+                    
+                    # Copy file to permanent storage
+                    with open(original_file_path, 'rb') as f:
+                        file_content = f.read()
+                    
+                    success = self.storage_adapter.write_file(file_content, target_path)
+                    if success:
+                        stored_file_path = target_path
+                        context['stored_file_path'] = stored_file_path
+                        logger.info(f"File stored for async processing: {stored_file_path}")
+                    else:
+                        raise Exception(f"Failed to store file for async processing: {target_path}")
+                else:
+                    raise Exception(f"Neither stored file nor original file is accessible for async processing")
+            
+            # Update context to use stored file path for workers
+            async_context = context.copy()
+            async_context['file_path'] = stored_file_path  # Workers should use stored file
+            
+            # Initialize task orchestrator
+            orchestrator = DocumentTaskOrchestrator()
+            
+            # Create and submit processing chain
+            chain_result = orchestrator.create_processing_chain(
+                document_id=document_id,
+                case_id=case_id,
+                user_id=user_id,
+                context=async_context,
+                start_from_stage=state_manager.get_current_stage()
+            )
+            
+            # Return immediately with chain information
+            return {
+                "status": "processing",
+                "chain_id": chain_result.id,
+                "message": "Async processing chain submitted",
+                "async_mode": True,
+                "stored_file_path": stored_file_path
+            }
+            
+        except Exception as e:
+            logger.error(f"Error starting async processing: {str(e)}")
+            return {
+                "status": "error",
+                "error": f"Failed to start async processing: {str(e)}",
+                "async_mode": True
+            }
+            
     def _check_concurrent_processing(self, document_id: str, force_restart: bool) -> bool:
         """Check if document is already being processed"""
         existing_doc = self.doc_repository.get_document(document_id)

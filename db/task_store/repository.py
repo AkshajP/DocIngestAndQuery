@@ -107,6 +107,12 @@ class TaskRepository:
         
         try:
             with self.conn.cursor() as cursor:
+                # Check if we're in a failed transaction state
+                if self.conn.status != psycopg2.extensions.STATUS_READY:
+                    logger.warning("Database connection not ready, rolling back and reconnecting")
+                    self.conn.rollback()
+                    self._ensure_connection()
+                
                 # Build dynamic update query
                 updates = ["task_status = %s"]
                 params = [status.value]
@@ -160,9 +166,24 @@ class TaskRepository:
                     logger.info(f"Updated task {celery_task_id} status to {status.value}")
                 return rows_updated > 0
                 
+        except psycopg2.Error as e:
+            logger.error(f"Database error updating task status: {str(e)}")
+            try:
+                self.conn.rollback()
+            except:
+                pass
+            # Try to reconnect for next operation
+            try:
+                self._connect()
+            except:
+                pass
+            return False
         except Exception as e:
             logger.error(f"Error updating task status: {str(e)}")
-            self.conn.rollback()
+            try:
+                self.conn.rollback()
+            except:
+                pass
             return False
     
     def get_task_by_celery_id(self, celery_task_id: str) -> Optional[Dict[str, Any]]:

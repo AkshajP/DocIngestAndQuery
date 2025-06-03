@@ -11,21 +11,22 @@ Also while document is processing, the server hangs, i want it still to be able 
 
 ## Future Enhancements
 
-- [x] Sidebar and DASH modal integration
+
 - [ ] Regenerated messages should be multi-view
 - [ ] Remove welcome message from backend
 - [ ] Add copy and feedback icons and api to frontend
-- [x] Check why sources are not showing up
-- [x] ability to interact with doc processings - what failed
-- [x] Filter expressions for text and table content from vector db
 - [x] Emulate DASH using AG Grid 
     - [ ] Complexity - considering folder structure as an upload.-- ADD MANUALLY. 
-    - [x] Deciding migration of `registry.json`
-- [x] Stream response
+
 
 [ ] Internal knowledge base of SOPs
 [ ] FAQ for non client, Chatbot for client data, internal chatbot for sop data
 [ ] use case to model map
+[ ] Celery integration
+[ ] Integrate tool calls
+    [ ] check into langgraph implementation for feedback and
+    [ ] surface the system prompts for better prompt management
+[ ] Dossier preparation using SoC, SoD (and extra client docs)
 
 
 ---
