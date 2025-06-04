@@ -27,31 +27,19 @@ class BaseDocumentTask(Task):
     def before_start(self, task_id, args, kwargs):
         """Initialize task state before execution"""
         try:
+            # Create fresh task repository for this task
             self.task_repo = TaskRepository()
             self.document_id = kwargs.get('document_id')
             self.current_stage = kwargs.get('stage')
             
             if self.document_id and self.current_stage:
-                # Register this task if not already registered
-                case_id = kwargs.get('case_id', 'default')
-                user_id = kwargs.get('user_id', 'system')
-                
-                # Try to register (will fail silently if already exists)
+                # Update task status to running (task should already be registered)
                 try:
-                    self.task_repo.register_task(
-                        document_id=self.document_id,
-                        case_id=case_id,
-                        user_id=user_id,
-                        processing_stage=self.current_stage,
-                        celery_task_id=task_id,
-                        task_name=self.__class__.__name__
-                    )
+                    self.task_repo.update_task_status(task_id, TaskStatus.RUNNING, progress=0)
+                    logger.info(f"Started task {task_id} for document {self.document_id}, stage {self.current_stage}")
                 except Exception as e:
-                    logger.debug(f"Task registration skipped (likely already exists): {str(e)}")
-                
-                # Mark task as running
-                self.task_repo.update_task_status(task_id, TaskStatus.RUNNING, progress=0)
-                logger.info(f"Started task {task_id} for document {self.document_id}, stage {self.current_stage}")
+                    logger.warning(f"Could not update task status on start: {str(e)}")
+                    # Don't fail the task if status update fails
                 
         except Exception as e:
             logger.error(f"Error in task initialization: {str(e)}")

@@ -69,29 +69,62 @@ class TaskRepository:
         Register a new Celery task.
         
         Returns:
-            Task database ID
+            Task database ID (0 if already exists)
         """
         self._ensure_connection()
         
-        with self.conn.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO document_tasks (
-                    document_id, case_id, user_id, processing_stage, 
-                    celery_task_id, task_name, worker_hostname, worker_pid,
-                    started_at
+        try:
+            with self.conn.cursor() as cursor:
+                # First check if task already exists
+                cursor.execute(
+                    "SELECT id FROM document_tasks WHERE celery_task_id = %s",
+                    (celery_task_id,)
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                RETURNING id
-            """, (
-                document_id, case_id, user_id, processing_stage,
-                celery_task_id, task_name, worker_hostname, worker_pid
-            ))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    logger.info(f"Task {celery_task_id} already registered with id {existing[0]}")
+                    self.conn.commit()  # Important: commit to clear transaction
+                    return existing[0]
+                
+                # If not exists, insert new task
+                cursor.execute("""
+                    INSERT INTO document_tasks (
+                        document_id, case_id, user_id, processing_stage, 
+                        celery_task_id, task_name, worker_hostname, worker_pid,
+                        started_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    RETURNING id
+                """, (
+                    document_id, case_id, user_id, processing_stage,
+                    celery_task_id, task_name, worker_hostname, worker_pid
+                ))
+                
+                task_id = cursor.fetchone()[0]
+                self.conn.commit()
+                
+                logger.info(f"Registered task {celery_task_id} for document {document_id}, stage {processing_stage}")
+                return task_id
+                
+        except psycopg2.errors.UniqueViolation:
+            # Handle race condition where another worker registered the task
+            logger.info(f"Task {celery_task_id} was registered by another worker")
+            self.conn.rollback()  # Clear the aborted transaction
             
-            task_id = cursor.fetchone()[0]
-            self.conn.commit()
-            
-            logger.info(f"Registered task {celery_task_id} for document {document_id}, stage {processing_stage}")
-            return task_id
+            # Get the existing task ID
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM document_tasks WHERE celery_task_id = %s",
+                    (celery_task_id,)
+                )
+                existing = cursor.fetchone()
+                return existing[0] if existing else 0
+                
+        except Exception as e:
+            logger.error(f"Error registering task: {str(e)}")
+            self.conn.rollback()  # Always rollback on error
+            raise
     
     def update_task_status(
         self,
@@ -103,7 +136,7 @@ class TaskRepository:
         metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """Update task status and related fields"""
-        self._ensure_connection()
+        self._recover_connection()
         
         try:
             with self.conn.cursor() as cursor:
@@ -190,14 +223,20 @@ class TaskRepository:
         """Get task by Celery task ID"""
         self._ensure_connection()
         
-        with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
-            cursor.execute(
-                "SELECT * FROM document_tasks WHERE celery_task_id = %s",
-                (celery_task_id,)
-            )
-            
-            result = cursor.fetchone()
-            return dict(result) if result else None
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute(
+                    "SELECT * FROM document_tasks WHERE celery_task_id = %s",
+                    (celery_task_id,)
+                )
+                
+                result = cursor.fetchone()
+                self.conn.commit()  # Ensure clean transaction state
+                return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Error getting task by celery_id: {str(e)}")
+            self.conn.rollback()
+            return None
     
     def get_tasks_by_document(self, document_id: str) -> List[Dict[str, Any]]:
         """Get all tasks for a document"""
@@ -223,6 +262,14 @@ class TaskRepository:
             
             result = cursor.fetchone()
             return dict(result) if result else None
+    
+    def get_all_tasks(self) -> List[Dict[str, Any]]:
+        """Get all tasks for this document"""
+        try:
+            return self.task_repository.get_tasks_by_document(self.document_id)
+        except Exception as e:
+            logger.error(f"Error getting tasks for document {self.document_id}: {str(e)}")
+            return []
     
     def get_active_tasks(self, case_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get all active (running/paused/pending) tasks"""
@@ -344,3 +391,15 @@ class TaskRepository:
                 "status_counts": status_counts,
                 "active_tasks": status_counts.get('running', 0) + status_counts.get('pending', 0) + status_counts.get('paused', 0)
             }
+            
+    def _recover_connection(self):
+        """Recover from aborted transaction state"""
+        try:
+            if self.conn and self.conn.status == psycopg2.extensions.STATUS_IN_TRANSACTION:
+                self.conn.rollback()
+                logger.info("Rolled back aborted transaction")
+        except:
+            pass
+        
+        # Ensure connection is valid
+        self._ensure_connection()

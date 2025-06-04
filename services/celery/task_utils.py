@@ -68,7 +68,7 @@ class DocumentTaskOrchestrator:
         
         # Clean context for Celery serialization (remove non-serializable objects)
         celery_context = self._prepare_context_for_celery(context)
-        
+        celery_context['document_id'] = document_id
         # Create task signatures for the chain
         task_signatures = []
         
@@ -91,7 +91,24 @@ class DocumentTaskOrchestrator:
         processing_chain = chain(*task_signatures)
         result = processing_chain.apply_async()
         
-        logger.info(f"Created processing chain for document {document_id} with {len(task_signatures)} tasks")
+        chain_id = result.id
+    
+        # Register the chain ID with each task stage
+        for stage in stage_order[start_index:]:
+            try:
+                self.task_repo.register_task(
+                    document_id=document_id,
+                    case_id=case_id,
+                    user_id=user_id,
+                    processing_stage=stage,
+                    celery_task_id=f"{chain_id}_{stage}",  # Unique ID per stage
+                    task_name=f"chain_{stage}",
+                    metadata={"chain_id": chain_id}
+                )
+            except Exception as e:
+                logger.warning(f"Could not pre-register task for stage {stage}: {str(e)}")
+        
+        logger.info(f"Created processing chain {chain_id} for document {document_id} with {len(task_signatures)} tasks")
         return result
     
     def _prepare_context_for_celery(self, context: Dict[str, Any]) -> Dict[str, Any]:

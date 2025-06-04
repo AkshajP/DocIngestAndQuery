@@ -145,8 +145,42 @@ class PersistentUploadService:
             
             # Choose processing method based on use_celery parameter
             if use_celery:
-                pipeline_result = self._execute_async_processing_pipeline(state_manager, context)
-            else:
+                try:
+                    pipeline_result = self._execute_async_processing_pipeline(state_manager, context)
+                    
+                    # For async mode, return immediately with async indicators
+                    if pipeline_result.get("async_mode"):
+                        # Update document status to indicate async processing
+                        self.doc_repository.update_document(document_id, {
+                            "status": "processing",
+                            "async_mode": True,
+                            "chain_id": pipeline_result.get("chain_id")
+                        })
+                        
+                        # Calculate minimal processing time for immediate return
+                        total_processing_time = time.time() - process_start_time
+                        
+                        # Remove processing lock for async (will be managed by tasks)
+                        self._remove_processing_lock(doc_dir)
+                        
+                        return {
+                            "status": "processing",
+                            "document_id": document_id,
+                            "case_id": case_id,
+                            "processing_time": total_processing_time,
+                            "stored_file_path": pipeline_result.get("stored_file_path"),
+                            "doc_dir": doc_dir,
+                            "processing_state": state_manager.get_comprehensive_status(),
+                            "async_mode": True,
+                            "chain_id": pipeline_result.get("chain_id"),
+                            "message": "Document processing submitted to task queue"
+                        }
+                except Exception as e:
+                    logger.error(f"Failed to start async processing, falling back to sync: {str(e)}")
+                    # Fall back to sync mode on error
+                    use_celery = False
+
+            if not use_celery:
                 # Add storage adapter for synchronous processing
                 context["storage_adapter"] = self.storage_adapter
                 pipeline_result = self._execute_processing_pipeline_with_tasks(state_manager, context)

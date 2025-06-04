@@ -67,21 +67,17 @@ class ProcessingStateManager:
     ) -> bool:
         """
         Register a Celery task for a processing stage.
-        
-        Args:
-            stage: Processing stage name
-            celery_task_id: Celery task ID
-            task_name: Task name/type
-            worker_hostname: Optional worker hostname
-            worker_pid: Optional worker PID
-            
-        Returns:
-            True if successful, False otherwise
         """
         try:
             if not self.case_id or not self.user_id:
                 logger.error(f"Cannot register task without case_id and user_id for document {self.document_id}")
                 return False
+            
+            # Check if task already exists to avoid duplicate registration
+            existing_task = self.task_repository.get_task_by_celery_id(celery_task_id)
+            if existing_task:
+                logger.info(f"Task {celery_task_id} already registered for document {self.document_id}")
+                return True
             
             # Register task in database
             task_db_id = self.task_repository.register_task(

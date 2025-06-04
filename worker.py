@@ -6,7 +6,8 @@ Celery worker entry point for document processing.
 import os
 import sys
 import logging
-
+import multiprocessing
+multiprocessing.set_start_method("spawn", force=True)
 # Add the app directory to Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

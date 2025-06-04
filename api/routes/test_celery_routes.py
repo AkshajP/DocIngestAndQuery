@@ -2,6 +2,9 @@ from fastapi import APIRouter
 from services.celery.tasks.document_tasks import test_document_task
 from core.celery_app import test_task
 import logging
+import time
+from db.task_store.repository import TaskStatus
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai/test", tags=["test"])
@@ -234,20 +237,12 @@ async def test_celery_upload_integration():
         import os
         import asyncio
         
-        # Create a small test PDF file
-        test_content = b"%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog\n/Pages 2 0 R\n>>\nendobj\n2 0 obj\n<<\n/Type /Pages\n/Kids [3 0 R]\n/Count 1\n>>\nendobj\n3 0 obj\n<<\n/Type /Page\n/Parent 2 0 R\n/MediaBox [0 0 612 792]\n>>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000010 00000 n \n0000000053 00000 n \n0000000125 00000 n \ntrailer\n<<\n/Size 4\n/Root 1 0 R\n>>\nstartxref\n205\n%%EOF"
-        
-        # Create temporary file with a longer-lived approach for async processing
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', prefix='celery_test_')
-        temp_file.write(test_content)
-        temp_file.close()  # Close file but keep it on disk
-        temp_file_path = temp_file.name
+        temp_file_path = './tests/dummy.pdf'
         
         try:
             # Initialize upload service
             upload_service = PersistentUploadService()
             
-            # Test with Celery tasks enabled
             result = upload_service.upload_document(
                 file_path=temp_file_path,
                 case_id="test_case_celery_123",
@@ -261,6 +256,7 @@ async def test_celery_upload_integration():
             # For async processing, don't immediately delete the temp file
             # Let the file be cleaned up later or by the system
             cleanup_scheduled = False
+            temp_file_kept = False
             
             if result.get("async_mode"):
                 # Schedule cleanup after a delay for async processing
@@ -272,11 +268,17 @@ async def test_celery_upload_integration():
                     except Exception as e:
                         logger.warning(f"Could not clean up temp file: {str(e)}")
                 
-                # Use asyncio to schedule cleanup (after giving tasks time to start)
                 import threading
-                threading.Timer(10.0, delayed_cleanup).start()  # Cleanup after 10 seconds
+                threading.Timer(30.0, delayed_cleanup).start()  # Cleanup after 30 seconds
                 cleanup_scheduled = True
-            
+                temp_file_kept = True
+            else:
+                # Sync mode - cleanup immediately
+                try:
+                    if os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                except:
+                    pass
             # Get task status
             task_status = upload_service.get_document_task_status(document_id)
             
@@ -286,9 +288,9 @@ async def test_celery_upload_integration():
                 "upload_result": result,
                 "task_status": task_status,
                 "cleanup_info": {
-                    "temp_file_kept": cleanup_scheduled,
+                    "temp_file_kept": temp_file_kept,
                     "cleanup_scheduled": cleanup_scheduled,
-                    "temp_file_path": temp_file_path if cleanup_scheduled else "deleted"
+                    "temp_file_path": temp_file_path if temp_file_kept else "deleted"
                 },
                 "features_tested": [
                     "Celery task chain creation",
@@ -327,9 +329,9 @@ async def test_task_chain():
         
         # Create test context (only JSON-serializable data)
         test_context = {
-            "file_path": "test_file.pdf",
+            "file_path": "./tests/dummy.pdf",
             "stored_file_path": "test_file.pdf",
-            "doc_dir": "document_store/test_chain_doc_123",
+            "doc_dir": "document_store/dummy.pdf",
             "is_test": True,
             "metadata": {"test": True}
         }
@@ -337,7 +339,7 @@ async def test_task_chain():
         
         # Create processing chain
         chain_result = orchestrator.create_processing_chain(
-            document_id="test_chain_doc_123",
+            document_id="test_dummy.pdf",
             case_id="test_case_456",
             user_id="test_user_789",
             context=test_context
@@ -581,3 +583,348 @@ async def get_integration_status():
             "overall_status": "error",
             "error": str(e)
         }
+        
+@router.get("/db-health")
+async def check_database_health():
+    """Check database connection health and transaction states"""
+    from db.task_store.repository import TaskRepository
+    from db.document_store.repository import DocumentMetadataRepository
+    import psycopg2
+    
+    results = {
+        "task_db": {},
+        "document_db": {},
+        "connection_pool": {}
+    }
+    
+    # Check task repository
+    try:
+        task_repo = TaskRepository()
+        with task_repo.conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            
+        results["task_db"] = {
+            "status": "connected",
+            "connection_status": task_repo.conn.status,
+            "transaction_status": task_repo.conn.get_transaction_status(),
+            "pid": task_repo.conn.get_backend_pid()
+        }
+    except Exception as e:
+        results["task_db"] = {"status": "error", "error": str(e)}
+    
+    # Check document repository
+    try:
+        doc_repo = DocumentMetadataRepository()
+        stats = doc_repo.get_statistics()
+        results["document_db"] = {
+            "status": "connected",
+            "total_documents": stats.get("total_documents", 0)
+        }
+    except Exception as e:
+        results["document_db"] = {"status": "error", "error": str(e)}
+    
+    return results
+
+@router.get("/tasks/{document_id}/debug")
+async def debug_document_tasks(document_id: str):
+    """Get detailed task information with SQL queries"""
+    from db.task_store.repository import TaskRepository
+    import psycopg2.extras
+    
+    task_repo = TaskRepository()
+    debug_info = {
+        "document_id": document_id,
+        "queries_executed": [],
+        "results": {}
+    }
+    
+    queries = [
+        ("all_tasks", "SELECT * FROM document_tasks WHERE document_id = %s"),
+        ("task_count", "SELECT COUNT(*) as count FROM document_tasks WHERE document_id = %s"),
+        ("latest_task", "SELECT * FROM document_tasks WHERE document_id = %s ORDER BY created_at DESC LIMIT 1"),
+        ("task_statuses", "SELECT task_status, COUNT(*) FROM document_tasks WHERE document_id = %s GROUP BY task_status")
+    ]
+    
+    try:
+        with task_repo.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            for query_name, query in queries:
+                cursor.execute(query, (document_id,))
+                result = cursor.fetchall()
+                debug_info["results"][query_name] = [dict(row) for row in result] if result else []
+                debug_info["queries_executed"].append(query_name)
+        
+        # Also check state manager
+        from services.document.processing_state_manager import ProcessingStateManager
+        from services.document.storage import LocalStorageAdapter
+        
+        state_manager = ProcessingStateManager(
+            document_id=document_id,
+            storage_adapter=LocalStorageAdapter(),
+            doc_dir=f"document_store/{document_id}",
+            case_id="test",
+            user_id="test"
+        )
+        
+        debug_info["state_manager_tasks"] = state_manager.get_all_tasks()
+        debug_info["comprehensive_status"] = state_manager.get_comprehensive_status()
+        
+    except Exception as e:
+        debug_info["error"] = str(e)
+    
+    return debug_info
+
+@router.get("/celery/workers")
+async def get_celery_worker_status():
+    """Get status of all Celery workers"""
+    from core.celery_app import celery_app
+    
+    try:
+        # Get active workers
+        inspect = celery_app.control.inspect()
+        
+        return {
+            "active_workers": inspect.active() or {},
+            "registered_tasks": inspect.registered() or {},
+            "scheduled_tasks": inspect.scheduled() or {},
+            "reserved_tasks": inspect.reserved() or {},
+            "stats": inspect.stats() or {},
+            "active_queues": inspect.active_queues() or {}
+        }
+    except Exception as e:
+        return {"error": str(e)}
+    
+    
+@router.get("/test/celery/workers")
+async def get_celery_worker_status():
+    """Get status of all Celery workers"""
+    from core.celery_app import celery_app
+    
+    try:
+        # Get active workers
+        inspect = celery_app.control.inspect()
+        
+        return {
+            "active_workers": inspect.active() or {},
+            "registered_tasks": inspect.registered() or {},
+            "scheduled_tasks": inspect.scheduled() or {},
+            "reserved_tasks": inspect.reserved() or {},
+            "stats": inspect.stats() or {},
+            "active_queues": inspect.active_queues() or {}
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.get("/tasks/{task_id}/logs")
+async def get_task_logs(task_id: str, lines: int = 100):
+    """Get logs for a specific task from Redis"""
+    import redis
+    from core.config import get_config
+    
+    config = get_config()
+    logs = {
+        "task_id": task_id,
+        "logs": [],
+        "metadata": {}
+    }
+    
+    try:
+        # Connect to Redis
+        r = redis.from_url(config.celery.broker_url)
+        
+        # Get task result
+        task_key = f"celery-task-meta-{task_id}"
+        task_data = r.get(task_key)
+        if task_data:
+            import json
+            logs["metadata"] = json.loads(task_data)
+        
+        # Get logs (if stored in Redis)
+        log_key = f"task-logs:{task_id}"
+        task_logs = r.lrange(log_key, -lines, -1)
+        logs["logs"] = [log.decode('utf-8') for log in task_logs]
+        
+    except Exception as e:
+        logs["error"] = str(e)
+    
+    return logs
+
+@router.post("/task-registration")
+async def test_task_registration():
+    """Test task registration flow step by step"""
+    from db.task_store.repository import TaskRepository
+    import uuid
+    
+    test_results = {
+        "steps": [],
+        "success": True
+    }
+    
+    task_repo = TaskRepository()
+    test_task_id = str(uuid.uuid4())
+    test_doc_id = f"test_doc_{int(time.time())}"
+    
+    try:
+        # Step 1: Register task
+        task_id = task_repo.register_task(
+            document_id=test_doc_id,
+            case_id="test_case",
+            user_id="test_user",
+            processing_stage="test_stage",
+            celery_task_id=test_task_id,
+            task_name="test_task"
+        )
+        test_results["steps"].append({
+            "step": "register_task",
+            "success": True,
+            "task_id": task_id
+        })
+        
+        # Step 2: Retrieve by celery_id
+        task = task_repo.get_task_by_celery_id(test_task_id)
+        test_results["steps"].append({
+            "step": "get_by_celery_id",
+            "success": task is not None,
+            "task": task
+        })
+        
+        # Step 3: Retrieve by document
+        tasks = task_repo.get_tasks_by_document(test_doc_id)
+        test_results["steps"].append({
+            "step": "get_by_document",
+            "success": len(tasks) > 0,
+            "count": len(tasks)
+        })
+        
+        # Step 4: Update status
+        updated = task_repo.update_task_status(test_task_id, TaskStatus.SUCCESS)
+        test_results["steps"].append({
+            "step": "update_status",
+            "success": updated
+        })
+        
+        # Step 5: Clean up
+        deleted = task_repo.delete_task(test_task_id)
+        test_results["steps"].append({
+            "step": "cleanup",
+            "success": deleted
+        })
+        
+    except Exception as e:
+        test_results["success"] = False
+        test_results["error"] = str(e)
+    
+    return test_results
+
+@router.get("/connection-pool")
+async def check_connection_pool():
+    """Check database connection pool status"""
+    import psycopg2
+    from core.config import get_config
+    
+    config = get_config()
+    pool_info = {
+        "connections": [],
+        "active_connections": 0,
+        "idle_connections": 0
+    }
+    
+    try:
+        # Query PostgreSQL for connection info
+        conn = psycopg2.connect(
+            host=config.database.host,
+            port=config.database.port,
+            dbname=config.database.dbname,
+            user=config.database.user,
+            password=config.database.password
+        )
+        
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT pid, usename, application_name, client_addr, 
+                       state, state_change, query_start, query
+                FROM pg_stat_activity
+                WHERE datname = %s
+            """, (config.database.dbname,))
+            
+            for row in cursor.fetchall():
+                conn_info = {
+                    "pid": row[0],
+                    "user": row[1],
+                    "application": row[2],
+                    "client": str(row[3]),
+                    "state": row[4],
+                    "state_change": row[5].isoformat() if row[5] else None,
+                    "query_start": row[6].isoformat() if row[6] else None,
+                    "last_query": row[7][:100] if row[7] else None
+                }
+                pool_info["connections"].append(conn_info)
+                
+                if row[4] == "active":
+                    pool_info["active_connections"] += 1
+                elif row[4] == "idle":
+                    pool_info["idle_connections"] += 1
+                    
+        conn.close()
+        
+    except Exception as e:
+        pool_info["error"] = str(e)
+    
+    return pool_info
+
+@router.get("/monitor/active-tasks")
+async def monitor_active_tasks():
+    """Get real-time snapshot of all active tasks"""
+    from db.task_store.repository import TaskRepository
+    from services.celery.task_utils import DocumentTaskOrchestrator
+    
+    monitor_data = {
+        "timestamp": datetime.now().isoformat(),
+        "database_tasks": {},
+        "celery_tasks": {},
+        "mismatches": []
+    }
+    
+    try:
+        # Get all active tasks from database
+        task_repo = TaskRepository()
+        active_tasks = task_repo.get_active_tasks()
+        
+        orchestrator = DocumentTaskOrchestrator()
+        
+        for task in active_tasks:
+            doc_id = task["document_id"]
+            stage = task["processing_stage"]
+            celery_id = task["celery_task_id"]
+            
+            # Database info
+            if doc_id not in monitor_data["database_tasks"]:
+                monitor_data["database_tasks"][doc_id] = {}
+            
+            monitor_data["database_tasks"][doc_id][stage] = {
+                "db_status": task["task_status"],
+                "celery_task_id": celery_id,
+                "progress": task["progress"]
+            }
+            
+            # Celery info
+            celery_status = orchestrator.get_task_status(celery_id)
+            if doc_id not in monitor_data["celery_tasks"]:
+                monitor_data["celery_tasks"][doc_id] = {}
+            
+            monitor_data["celery_tasks"][doc_id][stage] = celery_status
+            
+            # Check for mismatches
+            if celery_status["status"] != task["task_status"]:
+                monitor_data["mismatches"].append({
+                    "document_id": doc_id,
+                    "stage": stage,
+                    "db_status": task["task_status"],
+                    "celery_status": celery_status["status"]
+                })
+                
+    except Exception as e:
+        monitor_data["error"] = str(e)
+    
+    return monitor_data
