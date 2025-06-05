@@ -92,7 +92,7 @@ class BaseDocumentTask(Task):
             return LocalStorageAdapter()
     
     def _get_processing_context(self, document_id: str) -> Dict[str, Any]:
-        """Get processing context with ROBUST file path resolution"""
+        """Get processing context with CONTAINER PATH OVERRIDE"""
         
         # Get document from repository
         document = self.doc_repository.get_document(document_id)
@@ -102,66 +102,31 @@ class BaseDocumentTask(Task):
         logger.info(f"Retrieved document {document_id} from repository")
         logger.debug(f"Document metadata: {document}")
         
-        # Get all possible file paths
-        stored_file_path = document.get("stored_file_path")
-        original_file_path = document.get("original_file_path")
-        doc_dir = document.get("doc_dir")
+        # CONTAINER PATH OVERRIDE - Force use container paths instead of host paths
+        doc_dir = f"/app/document_store/{document_id}"
+        doc_dir = os.path.abspath(doc_dir)
         
-        logger.info(f"File paths from metadata - stored: {stored_file_path}, original: {original_file_path}, doc_dir: {doc_dir}")
+        # Try multiple common file names in the container
+        potential_files = [
+            f"/app/document_store/{document_id}/original.pdf",
+            f"/app/document_store/{document_id}/document.pdf", 
+            f"/app/document_store/{document_id}/file.pdf"
+        ]
         
-        # If we don't have doc_dir, construct it
-        if not doc_dir:
-            doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
-            doc_dir = os.path.abspath(doc_dir)
-        else:
-            doc_dir = os.path.abspath(doc_dir)
-        
-        # Resolve file path with multiple fallback strategies
         resolved_file_path = None
         path_attempts = []
         
-        # Strategy 1: Use stored_file_path if it exists
-        if stored_file_path:
-            # Try as absolute path first
-            abs_stored_path = os.path.abspath(stored_file_path)
-            path_attempts.append(("stored_file_path (absolute)", abs_stored_path, os.path.exists(abs_stored_path)))
+        # Strategy 1: Check predefined container paths
+        for candidate_path in potential_files:
+            abs_path = os.path.abspath(candidate_path)
+            path_attempts.append(("container_predefined", abs_path, os.path.exists(abs_path)))
             
-            if os.path.exists(abs_stored_path):
-                resolved_file_path = abs_stored_path
-                logger.info(f"Found file using stored_file_path (absolute): {resolved_file_path}")
-            elif os.path.exists(stored_file_path):
-                resolved_file_path = stored_file_path
-                logger.info(f"Found file using stored_file_path (relative): {resolved_file_path}")
-            else:
-                path_attempts.append(("stored_file_path (relative)", stored_file_path, os.path.exists(stored_file_path)))
+            if os.path.exists(abs_path):
+                resolved_file_path = abs_path
+                logger.info(f"Found file using container predefined path: {resolved_file_path}")
+                break
         
-        # Strategy 2: Use original_file_path if stored path failed
-        if not resolved_file_path and original_file_path:
-            abs_original_path = os.path.abspath(original_file_path)
-            path_attempts.append(("original_file_path (absolute)", abs_original_path, os.path.exists(abs_original_path)))
-            
-            if os.path.exists(abs_original_path):
-                resolved_file_path = abs_original_path
-                logger.info(f"Found file using original_file_path (absolute): {resolved_file_path}")
-            elif os.path.exists(original_file_path):
-                resolved_file_path = original_file_path
-                logger.info(f"Found file using original_file_path (relative): {resolved_file_path}")
-            else:
-                path_attempts.append(("original_file_path (relative)", original_file_path, os.path.exists(original_file_path)))
-        
-        # Strategy 3: Look for common file names in doc_dir
-        if not resolved_file_path and os.path.exists(doc_dir):
-            common_names = ["original.pdf", "document.pdf", "file.pdf"]
-            for name in common_names:
-                candidate_path = os.path.join(doc_dir, name)
-                path_attempts.append((f"doc_dir/{name}", candidate_path, os.path.exists(candidate_path)))
-                
-                if os.path.exists(candidate_path):
-                    resolved_file_path = candidate_path
-                    logger.info(f"Found file using common name strategy: {resolved_file_path}")
-                    break
-        
-        # Strategy 4: List files in doc_dir and take first PDF
+        # Strategy 2: Scan the document directory for PDF files
         if not resolved_file_path and os.path.exists(doc_dir):
             try:
                 files_in_dir = os.listdir(doc_dir)
@@ -174,6 +139,40 @@ class BaseDocumentTask(Task):
             except Exception as e:
                 logger.warning(f"Could not scan doc_dir {doc_dir}: {str(e)}")
                 path_attempts.append(("doc_dir scan", doc_dir, False))
+        
+        # Strategy 3: Fallback to original metadata paths (translate to container)
+        if not resolved_file_path:
+            stored_file_path = document.get("stored_file_path")
+            original_file_path = document.get("original_file_path")
+            
+            # Try to translate host paths to container paths
+            def translate_to_container_path(path):
+                if not path:
+                    return None
+                if "document_store" in path:
+                    parts = path.split("document_store")
+                    if len(parts) > 1:
+                        container_path = "/app/document_store" + parts[1]
+                        return container_path
+                return path
+            
+            if stored_file_path:
+                translated_path = translate_to_container_path(stored_file_path)
+                if translated_path and os.path.exists(translated_path):
+                    resolved_file_path = translated_path
+                    logger.info(f"Found file using translated stored path: {resolved_file_path}")
+                    path_attempts.append(("translated_stored", translated_path, True))
+                else:
+                    path_attempts.append(("translated_stored", translated_path, False))
+            
+            if not resolved_file_path and original_file_path:
+                translated_path = translate_to_container_path(original_file_path)
+                if translated_path and os.path.exists(translated_path):
+                    resolved_file_path = translated_path
+                    logger.info(f"Found file using translated original path: {resolved_file_path}")
+                    path_attempts.append(("translated_original", translated_path, True))
+                else:
+                    path_attempts.append(("translated_original", translated_path, False))
         
         # If no file found, provide detailed error
         if not resolved_file_path:
@@ -189,8 +188,7 @@ class BaseDocumentTask(Task):
             # Additional debugging info
             logger.error(f"File resolution failed for document {document_id}")
             logger.error(f"Document metadata: {document}")
-            logger.error(f"Config storage dir: {self.config.storage.storage_dir}")
-            logger.error(f"Computed doc_dir: {doc_dir}")
+            logger.error(f"Container doc_dir: {doc_dir}")
             logger.error(f"Doc_dir exists: {os.path.exists(doc_dir)}")
             
             if os.path.exists(doc_dir):
@@ -661,6 +659,14 @@ def start_document_processing_chain(self, document_id: str):
     logger.info(f"Starting document processing chain for {document_id}")
     
     try:
+        document = self.doc_repository.get_document(document_id)
+        if not document:
+            error_msg = f"Document {document_id} not found in repository - cannot start processing"
+            logger.error(error_msg)
+            return {"status": "error", "error": error_msg}
+        
+        logger.info(f"Document {document_id} found in repository, proceeding with processing")
+        
         # Update the workflow task with this Celery task ID
         if self.task_state_manager:
             try:

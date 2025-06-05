@@ -16,7 +16,7 @@ Requirements:
     - Celery worker running: python worker.py  
     - Document file available for testing
 """
-
+from datetime import datetime
 import time
 import sys
 import os
@@ -46,7 +46,7 @@ def example_document_processing():
         # Start processing
         result = upload_document_with_celery(
             file_path=test_file,
-            document_id="test_doc_123",
+            document_id=f"test_doc_{datetime.now()}",
             case_id="test_case",
             metadata={"source": "example_script"}
         )
@@ -78,16 +78,16 @@ def example_document_processing():
                 print(f"  Progress: {task.percent_complete}% - Status: {task.task_status} - Stage: {task.current_stage}")
                 
                 # Demonstrate pause after 20% progress
-                if i == 3 and task.can_pause:
-                    print("\n3. Demonstrating pause...")
-                    pause_result = task_manager.pause_task(document_id)
-                    print(f"  Pause result: {pause_result}")
+                # if i == 3 and task.can_pause:
+                #     print("\n3. Demonstrating pause...")
+                #     pause_result = task_manager.pause_task(document_id)
+                #     print(f"  Pause result: {pause_result}")
                     
-                    time.sleep(3)
+                #     time.sleep(3)
                     
-                    print("\n4. Demonstrating resume...")
-                    resume_result = task_manager.resume_task(document_id, f"resume_{celery_task_id}")
-                    print(f"  Resume result: {resume_result}")
+                #     print("\n4. Demonstrating resume...")
+                #     resume_result = task_manager.resume_task(document_id, f"resume_{celery_task_id}")
+                #     print(f"  Resume result: {resume_result}")
                 
                 # Check if completed
                 if task.task_status in ["SUCCESS", "FAILURE", "CANCELLED"]:

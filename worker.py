@@ -10,7 +10,7 @@ from core.celery_app import celery_app
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def main():
     # Worker arguments
     worker_args = [
         'worker',
-        '--loglevel=info',
+        '--loglevel=debug',
         '--concurrency=3',
         '--queues=document_processing,celery',
         '--hostname=docrag-worker@%h',

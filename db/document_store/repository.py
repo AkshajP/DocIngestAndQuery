@@ -138,6 +138,12 @@ class DocumentMetadataRepository:
                 logger.error(f"Error saving document registry: {str(e)}")
                 return False
     
+    def refresh_registry(self):
+        """Force reload the registry from disk"""
+        with self.metadata_lock:
+            self._load_registry()
+            logger.debug("Registry refreshed from disk")
+        
     def add_document(self, document_metadata: Dict[str, Any]) -> bool:
         """Add a document to the registry with enhanced error handling."""
         with self.metadata_lock:
@@ -287,6 +293,7 @@ class DocumentMetadataRepository:
             Document metadata dictionary or None if not found or no access
         """
         with self.metadata_lock:
+            self.refresh_registry()
             document = self.registry["documents"].get(document_id)
             
             # If document not found, return None
