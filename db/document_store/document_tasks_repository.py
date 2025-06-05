@@ -130,9 +130,9 @@ class DocumentTasksRepository:
                     'worker_id': document_task.worker_id,
                     'worker_hostname': document_task.worker_hostname,
                     'percent_complete': document_task.percent_complete,
-                    'checkpoint_data': json.dumps(document_task.checkpoint_data),
-                    'stage_metadata': json.dumps(document_task.stage_metadata),
-                    'error_details': json.dumps(document_task.error_details),
+                    'checkpoint_data': self._safe_json_dumps(document_task.checkpoint_data),
+                    'stage_metadata': self._safe_json_dumps(document_task.stage_metadata),
+                    'error_details': self._safe_json_dumps(document_task.error_details),
                     'retry_count': document_task.retry_count,
                     'max_retries': document_task.max_retries,
                 })
@@ -231,8 +231,8 @@ class DocumentTasksRepository:
                 
                 if error_details:
                     update_fields.append('error_details = %s')
-                    update_values.append(json.dumps(error_details))
-                
+                    update_values.append(self._safe_json_dumps(error_details)) 
+
                 # Update control flags based on status
                 if task_status == TaskStatus.PAUSED.value:
                     update_fields.extend(['can_pause = false', 'can_resume = true', 'pause_requested = false'])
@@ -278,7 +278,7 @@ class DocumentTasksRepository:
                 
                 if checkpoint_data:
                     update_fields.append('checkpoint_data = %s')
-                    update_values.append(json.dumps(checkpoint_data))
+                    update_values.append(self._safe_json_dumps(checkpoint_data))
                 
                 update_values.append(document_id)
                 
@@ -389,6 +389,22 @@ class DocumentTasksRepository:
     
     def _row_to_document_task(self, row: Dict[str, Any]) -> DocumentTask:
         """Convert database row to DocumentTask instance"""
+        
+        # Helper function to safely handle JSONB fields
+        def safe_json_load(value):
+            if value is None:
+                return {}
+            # If it's already a dict (parsed by psycopg2), return as-is
+            if isinstance(value, dict):
+                return value
+            # If it's a string, try to parse it
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+            return {}
+        
         return DocumentTask(
             id=row['id'],
             document_id=row['document_id'],
@@ -407,9 +423,27 @@ class DocumentTasksRepository:
             worker_id=row['worker_id'],
             worker_hostname=row['worker_hostname'],
             percent_complete=row['percent_complete'],
-            checkpoint_data=json.loads(row['checkpoint_data']) if row['checkpoint_data'] else {},
-            stage_metadata=json.loads(row['stage_metadata']) if row['stage_metadata'] else {},
-            error_details=json.loads(row['error_details']) if row['error_details'] else {},
+            checkpoint_data=safe_json_load(row['checkpoint_data']),
+            stage_metadata=safe_json_load(row['stage_metadata']),
+            error_details=safe_json_load(row['error_details']),
             retry_count=row['retry_count'],
             max_retries=row['max_retries'],
         )
+    
+    def _safe_json_dumps(self, data: Any) -> str:
+        """Safely serialize data to JSON string"""
+        if data is None:
+            return '{}'
+        if isinstance(data, str):
+            # If it's already a string, assume it's JSON
+            try:
+                # Validate it's valid JSON
+                json.loads(data)
+                return data
+            except json.JSONDecodeError:
+                # If not valid JSON, wrap it
+                return json.dumps({"raw_data": data})
+        if isinstance(data, dict):
+            return json.dumps(data)
+        # For other types, convert to dict
+        return json.dumps({"data": str(data)})

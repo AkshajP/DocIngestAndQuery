@@ -74,6 +74,11 @@ class DatabaseConfig(BaseModel):
     user: str = "youruser"
     password: str = "yourpassword"
     connection_timeout: int = 30
+    
+    @property
+    def connection_string(self) -> str:
+        """Generate PostgreSQL connection string for task management"""
+        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbname}"
 
 
 class AppConfig(BaseModel):

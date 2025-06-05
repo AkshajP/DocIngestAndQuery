@@ -13,6 +13,7 @@ class DocumentMetadataRepository:
     """
     Repository for document metadata storage and retrieval.
     Stores document metadata in a JSON file for persistence.
+    Enhanced with task management capabilities for Phase 1 Step 2.
     """
     
     def __init__(self, storage_path: str = "document_store/registry.json"):
@@ -97,6 +98,14 @@ class DocumentMetadataRepository:
                 if "case_id" not in document_metadata:
                     logger.error("Case ID is required for adding to registry")
                     return False
+                
+                # Initialize task control flags if not present
+                if "can_pause" not in document_metadata:
+                    document_metadata["can_pause"] = True
+                if "can_resume" not in document_metadata:
+                    document_metadata["can_resume"] = False
+                if "can_cancel" not in document_metadata:
+                    document_metadata["can_cancel"] = True
                 
                 # Ensure document_id exists in metadata
                 self.registry["documents"][document_id] = document_metadata
@@ -291,6 +300,7 @@ class DocumentMetadataRepository:
                 "documents_by_case": cases,
                 "last_updated": self.registry.get("last_updated")
             }
+    
     def add_document_with_processing_state(
         self, 
         document_metadata: Dict[str, Any],
@@ -390,6 +400,7 @@ class DocumentMetadataRepository:
                 doc for doc in self.registry["documents"].values()
                 if doc.get("processing_state", {}).get("current_stage") == stage
             ]
+    
     def get_failed_documents(self) -> List[Dict[str, Any]]:
         """
         Get all documents that have failed at any stage.
@@ -636,3 +647,265 @@ class DocumentMetadataRepository:
             }
             
             return enhanced_document
+
+    # ===== TASK MANAGEMENT METHODS (NEW FOR PHASE 1 STEP 2) =====
+    
+    def mark_task_as_paused(self, document_id: str) -> bool:
+        """
+        Mark a document task as paused.
+        
+        Args:
+            document_id: Document ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        with self.metadata_lock:
+            try:
+                if document_id not in self.registry["documents"]:
+                    logger.warning(f"Document {document_id} not found for pause marking")
+                    return False
+                
+                # Update document metadata
+                current_metadata = self.registry["documents"][document_id]
+                updated_metadata = {**current_metadata}
+                
+                # Update status and pause-related fields
+                updated_metadata.update({
+                    "status": "paused",
+                    "pause_time": datetime.now().isoformat(),
+                    "can_resume": True,
+                    "can_pause": False
+                })
+                
+                self.registry["documents"][document_id] = updated_metadata
+                
+                # Save to disk
+                return self._save_registry()
+            except Exception as e:
+                logger.error(f"Error marking task as paused for {document_id}: {str(e)}")
+                return False
+    
+    def mark_task_as_resumed(self, document_id: str) -> bool:
+        """
+        Mark a document task as resumed.
+        
+        Args:
+            document_id: Document ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        with self.metadata_lock:
+            try:
+                if document_id not in self.registry["documents"]:
+                    logger.warning(f"Document {document_id} not found for resume marking")
+                    return False
+                
+                # Update document metadata
+                current_metadata = self.registry["documents"][document_id]
+                updated_metadata = {**current_metadata}
+                
+                # Update status and resume-related fields
+                updated_metadata.update({
+                    "status": "processing",
+                    "resume_time": datetime.now().isoformat(),
+                    "can_resume": False,
+                    "can_pause": True
+                })
+                
+                self.registry["documents"][document_id] = updated_metadata
+                
+                # Save to disk
+                return self._save_registry()
+            except Exception as e:
+                logger.error(f"Error marking task as resumed for {document_id}: {str(e)}")
+                return False
+    
+    def mark_task_as_cancelled(self, document_id: str) -> bool:
+        """
+        Mark a document task as cancelled.
+        
+        Args:
+            document_id: Document ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        with self.metadata_lock:
+            try:
+                if document_id not in self.registry["documents"]:
+                    logger.warning(f"Document {document_id} not found for cancel marking")
+                    return False
+                
+                # Update document metadata
+                current_metadata = self.registry["documents"][document_id]
+                updated_metadata = {**current_metadata}
+                
+                # Update status and cancel-related fields
+                updated_metadata.update({
+                    "status": "cancelled",
+                    "cancel_time": datetime.now().isoformat(),
+                    "can_resume": False,
+                    "can_pause": False,
+                    "can_cancel": False
+                })
+                
+                self.registry["documents"][document_id] = updated_metadata
+                
+                # Save to disk
+                return self._save_registry()
+            except Exception as e:
+                logger.error(f"Error marking task as cancelled for {document_id}: {str(e)}")
+                return False
+    
+    def update_task_progress(self, document_id: str, progress_data: Dict[str, Any]) -> bool:
+        """
+        Update task progress information.
+        
+        Args:
+            document_id: Document ID
+            progress_data: Progress data dictionary
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        with self.metadata_lock:
+            try:
+                if document_id not in self.registry["documents"]:
+                    logger.warning(f"Document {document_id} not found for progress update")
+                    return False
+                
+                # Update document metadata with progress
+                current_metadata = self.registry["documents"][document_id]
+                updated_metadata = {**current_metadata}
+                
+                # Add progress data
+                updated_metadata.update({
+                    "progress": progress_data,
+                    "progress_updated_at": datetime.now().isoformat()
+                })
+                
+                self.registry["documents"][document_id] = updated_metadata
+                
+                # Save to disk
+                return self._save_registry()
+            except Exception as e:
+                logger.error(f"Error updating task progress for {document_id}: {str(e)}")
+                return False
+    
+    def get_pausable_documents(self) -> List[Dict[str, Any]]:
+        """
+        Get all documents that can be paused.
+        
+        Returns:
+            List of documents that can be paused
+        """
+        with self.metadata_lock:
+            return [
+                doc for doc in self.registry["documents"].values()
+                if doc.get("status") == "processing" and doc.get("can_pause", False)
+            ]
+    
+    def get_resumable_documents(self) -> List[Dict[str, Any]]:
+        """
+        Get all documents that can be resumed.
+        
+        Returns:
+            List of documents that can be resumed
+        """
+        with self.metadata_lock:
+            return [
+                doc for doc in self.registry["documents"].values()
+                if doc.get("status") == "paused" and doc.get("can_resume", False)
+            ]
+    
+    def get_cancellable_documents(self) -> List[Dict[str, Any]]:
+        """
+        Get all documents that can be cancelled.
+        
+        Returns:
+            List of documents that can be cancelled
+        """
+        with self.metadata_lock:
+            return [
+                doc for doc in self.registry["documents"].values()
+                if doc.get("can_cancel", False) and doc.get("status") not in ["completed", "cancelled", "failed"]
+            ]
+    
+    def get_documents_by_status(self, status: str) -> List[Dict[str, Any]]:
+        """
+        Get all documents with a specific status.
+        
+        Args:
+            status: Document status to filter by
+            
+        Returns:
+            List of documents with the specified status
+        """
+        with self.metadata_lock:
+            return [
+                doc for doc in self.registry["documents"].values()
+                if doc.get("status") == status
+            ]
+    
+    def update_task_control_flags(self, document_id: str, control_flags: Dict[str, bool]) -> bool:
+        """
+        Update task control flags (can_pause, can_resume, can_cancel).
+        
+        Args:
+            document_id: Document ID
+            control_flags: Dictionary with control flags to update
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        with self.metadata_lock:
+            try:
+                if document_id not in self.registry["documents"]:
+                    logger.warning(f"Document {document_id} not found for control flags update")
+                    return False
+                
+                # Update control flags
+                current_metadata = self.registry["documents"][document_id]
+                
+                # Only update valid control flags
+                valid_flags = ["can_pause", "can_resume", "can_cancel"]
+                for flag, value in control_flags.items():
+                    if flag in valid_flags and isinstance(value, bool):
+                        current_metadata[flag] = value
+                
+                # Add timestamp
+                current_metadata["control_flags_updated_at"] = datetime.now().isoformat()
+                
+                # Save to disk
+                return self._save_registry()
+            except Exception as e:
+                logger.error(f"Error updating control flags for {document_id}: {str(e)}")
+                return False
+    
+    def get_task_control_status(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get task control status for a document.
+        
+        Args:
+            document_id: Document ID
+            
+        Returns:
+            Dictionary with control status or None if not found
+        """
+        with self.metadata_lock:
+            document = self.registry["documents"].get(document_id)
+            if not document:
+                return None
+            
+            return {
+                "document_id": document_id,
+                "status": document.get("status", "unknown"),
+                "can_pause": document.get("can_pause", False),
+                "can_resume": document.get("can_resume", False),
+                "can_cancel": document.get("can_cancel", True),
+                "current_stage": document.get("processing_state", {}).get("current_stage", "unknown"),
+                "progress": document.get("progress", {}),
+                "last_updated": document.get("progress_updated_at") or document.get("last_updated")
+            }

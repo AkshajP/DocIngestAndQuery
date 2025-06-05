@@ -11,6 +11,7 @@ from services.chat.manager import ChatManager
 from services.chat.history import ChatHistoryService
 from services.retrieval.query_engine import QueryEngine
 from services.ml.embeddings import EmbeddingService
+from services.document.persistent_upload_service import PersistentUploadService
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class ServiceManager:
     """
     Centralized service manager that initializes and manages all application services.
     Services are created once at startup and reused across requests.
+    Now includes task state management for Celery integration.
     """
     
     def __init__(self, config=None):
@@ -37,6 +39,15 @@ class ServiceManager:
             self._services['chat_repository'] = ChatRepository(self.config.database)
             self._services['user_case_repository'] = UserCaseRepository(self.config.database)
             self._services['document_repository'] = DocumentMetadataRepository()
+            
+            # Initialize Celery task state manager (if available)
+            try:
+                from services.celery.task_state_manager import TaskStateManager
+                self._services['task_state_manager'] = TaskStateManager(config=self.config)
+                logger.info("Initialized Celery task state manager")
+            except ImportError:
+                logger.warning("Celery task state manager not available - running without task management")
+                self._services['task_state_manager'] = None
             
             # Initialize higher-level services (pass repositories to avoid re-initialization)
             self._services['chat_history_service'] = ChatHistoryService(
@@ -62,6 +73,11 @@ class ServiceManager:
                 embeddings=self._services['embedding_service']
             )
             
+            # Initialize document processing services
+            self._services['upload_service'] = PersistentUploadService(
+                config=self.config
+            )
+            
             self._initialized = True
             logger.info("All application services initialized successfully")
             
@@ -75,7 +91,7 @@ class ServiceManager:
             raise RuntimeError("Services not initialized. Call initialize() first.")
             
         service = self._services.get(service_name)
-        if service is None:
+        if service is None and service_name != 'task_state_manager':  # task_state_manager can be None
             raise ValueError(f"Service '{service_name}' not found")
             
         return service
@@ -108,17 +124,28 @@ class ServiceManager:
     def embedding_service(self) -> EmbeddingService:
         return self.get_service('embedding_service')
     
+    @property
+    def task_state_manager(self):
+        """Get task state manager (can be None if Celery not available)"""
+        return self.get_service('task_state_manager')
+    
+    @property
+    def upload_service(self) -> PersistentUploadService:
+        return self.get_service('upload_service')
+    
     def shutdown(self):
         """Cleanup services on application shutdown"""
         logger.info("Shutting down application services...")
         
-        # Close database connections
+        # Close database connections and cleanup resources
         for service_name, service in self._services.items():
             try:
                 if hasattr(service, 'close'):
                     service.close()
                 elif hasattr(service, 'release'):
                     service.release()
+                elif hasattr(service, 'cleanup'):
+                    service.cleanup()
             except Exception as e:
                 logger.error(f"Error shutting down {service_name}: {str(e)}")
         

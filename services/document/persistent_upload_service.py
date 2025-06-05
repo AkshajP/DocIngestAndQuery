@@ -20,6 +20,7 @@ class PersistentUploadService:
     """
     Service for persistent document upload and processing.
     Manages document processing through stages with retry capabilities.
+    Now integrates with Celery task management for pause/resume/cancel support.
     """
     
     def __init__(self, config=None):
@@ -32,6 +33,15 @@ class PersistentUploadService:
         # Initialize document metadata repository
         self.doc_repository = DocumentMetadataRepository()
         
+        # Initialize Celery task state manager
+        self.task_state_manager = None
+        try:
+            from services.celery.task_state_manager import TaskStateManager
+            self.task_state_manager = TaskStateManager()
+            logger.info("Initialized Celery task state manager")
+        except ImportError:
+            logger.warning("Celery task state manager not available - running without task management")
+        
         # Initialize stage processors
         self.processors = {
             ProcessingStage.EXTRACTION.value: ExtractionProcessor(self.config),
@@ -43,7 +53,7 @@ class PersistentUploadService:
         
         self._cleanup_stale_locks_on_startup()
         
-        logger.info("Initialized persistent upload service")
+        logger.info("Initialized persistent upload service with task management")
     
     def _initialize_storage_adapter(self):
         """Initialize the appropriate storage adapter based on configuration"""
@@ -66,10 +76,12 @@ class PersistentUploadService:
         document_id: Optional[str] = None,
         case_id: str = "default",
         metadata: Optional[Dict[str, Any]] = None,
-        force_restart: bool = False
+        force_restart: bool = False,
+        celery_task_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Upload and process a document through the complete pipeline with persistence.
+        Now integrates with Celery task management.
         
         Args:
             file_path: Path to the document file
@@ -77,6 +89,7 @@ class PersistentUploadService:
             case_id: Case ID for document grouping (required)
             metadata: Optional metadata about the document
             force_restart: If True, restart processing from the beginning
+            celery_task_id: Optional Celery task ID for tracking
             
         Returns:
             Dictionary with processing status and information
@@ -92,6 +105,18 @@ class PersistentUploadService:
             document_id = f"doc_{timestamp}_{safe_name}"
         
         try:
+            # Create workflow task in Celery task manager
+            if self.task_state_manager:
+                try:
+                    task_id = self.task_state_manager.create_workflow_task(
+                        document_id=document_id,
+                        initial_stage=ProcessingStage.UPLOAD.value,
+                        celery_task_id=celery_task_id
+                    )
+                    logger.info(f"Created Celery workflow task {task_id} for document {document_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to create Celery task: {str(e)} - proceeding without task management")
+            
             # Check if document is already being processed by another operation
             existing_doc = self.doc_repository.get_document(document_id)
             if existing_doc and existing_doc.get("status") == "processing" and not force_restart:
@@ -127,20 +152,29 @@ class PersistentUploadService:
             doc_dir = result["doc_dir"]
             stored_file_path = result["stored_file_path"]
             
-            # Initialize processing state manager with document repository for coordination
+            # Initialize processing state manager with document repository AND task state manager
             state_manager = ProcessingStateManager(
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
                 doc_dir=doc_dir,
-                doc_repository=self.doc_repository
+                doc_repository=self.doc_repository,
+                task_state_manager=self.task_state_manager  # NEW: Pass task state manager
             )
             
             # Reset processing if force_restart is True
             if force_restart:
                 state_manager.reset_to_stage(ProcessingStage.UPLOAD.value)
                 # Mark upload as complete again after reset since file is already stored
-                state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value)
+                state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value, celery_task_id)
                 logger.info(f"Force restarting processing for document {document_id}")
+            
+            # Start the task in Celery task manager
+            if self.task_state_manager and celery_task_id:
+                worker_info = {
+                    "worker_id": os.getenv("CELERY_WORKER_NAME", "unknown"),
+                    "worker_hostname": os.getenv("HOSTNAME", "unknown")
+                }
+                self.task_state_manager.start_task(document_id, celery_task_id, worker_info)
             
             # Create processing lock
             self._create_processing_lock(doc_dir)
@@ -153,11 +187,12 @@ class PersistentUploadService:
                 "stored_file_path": stored_file_path,
                 "doc_dir": doc_dir,
                 "storage_adapter": self.storage_adapter,
-                "metadata": metadata or {}
+                "metadata": metadata or {},
+                "celery_task_id": celery_task_id
             }
             
-            # Execute processing pipeline
-            pipeline_result = self._execute_processing_pipeline(state_manager, context)
+            # Execute processing pipeline with pause/cancel support
+            pipeline_result = self._execute_processing_pipeline_with_control(state_manager, context)
             
             # Calculate total processing time
             total_processing_time = time.time() - process_start_time
@@ -174,8 +209,25 @@ class PersistentUploadService:
                     "processing_date": datetime.now().isoformat()
                 })
                 
-                # Mark processing as completed
-                state_manager.mark_stage_complete(ProcessingStage.COMPLETED.value)
+                # Mark processing as completed in Celery task manager
+                if self.task_state_manager:
+                    self.task_state_manager.complete_task(document_id, success=True)
+                
+                state_manager.mark_stage_complete(ProcessingStage.COMPLETED.value, celery_task_id)
+            elif pipeline_result["status"] == "paused":
+                final_metadata.update({
+                    "status": "paused",
+                    "pause_stage": pipeline_result.get("paused_stage"),
+                    "pause_time": datetime.now().isoformat()
+                })
+                # Task state manager handles pause status internally
+            elif pipeline_result["status"] == "cancelled":
+                final_metadata.update({
+                    "status": "cancelled",
+                    "cancel_stage": pipeline_result.get("cancelled_stage"),
+                    "cancel_time": datetime.now().isoformat()
+                })
+                # Task state manager handles cancel status internally
             else:
                 final_metadata.update({
                     "status": "failed",
@@ -183,6 +235,14 @@ class PersistentUploadService:
                     "error_message": pipeline_result.get("error"),
                     "failure_time": datetime.now().isoformat()
                 })
+                
+                # Mark as failed in Celery task manager
+                if self.task_state_manager:
+                    self.task_state_manager.complete_task(
+                        document_id, 
+                        success=False,
+                        error_details={"error": pipeline_result.get("error")}
+                    )
             
             self.doc_repository.update_document(document_id, final_metadata)
             
@@ -206,6 +266,11 @@ class PersistentUploadService:
                     "tree_nodes_count": pipeline_result.get("tree_nodes_count", 0),
                     "raptor_levels": pipeline_result.get("raptor_levels", [])
                 })
+            elif pipeline_result["status"] in ["paused", "cancelled"]:
+                response.update({
+                    "control_action": pipeline_result["status"],
+                    f"{pipeline_result['status']}_stage": pipeline_result.get(f"{pipeline_result['status']}_stage")
+                })
             else:
                 response.update({
                     "error": pipeline_result.get("error"),
@@ -216,6 +281,14 @@ class PersistentUploadService:
             
         except Exception as e:
             logger.error(f"Error processing document {document_id}: {str(e)}")
+            
+            # Mark as failed in Celery task manager
+            if self.task_state_manager:
+                self.task_state_manager.complete_task(
+                    document_id,
+                    success=False,
+                    error_details={"error": str(e), "stage": "initialization"}
+                )
             
             # Remove processing lock on error
             try:
@@ -239,6 +312,344 @@ class PersistentUploadService:
                 "processing_time": time.time() - process_start_time
             }
     
+    def pause_document_processing(self, document_id: str) -> Dict[str, Any]:
+        """
+        Pause document processing.
+        
+        Args:
+            document_id: Document ID to pause
+            
+        Returns:
+            Dictionary with pause status
+        """
+        try:
+            if not self.task_state_manager:
+                return {
+                    "status": "error",
+                    "error": "Task management not available"
+                }
+            
+            success = self.task_state_manager.pause_task(document_id)
+            
+            if success:
+                # Update document repository
+                self.doc_repository.mark_task_as_paused(document_id)
+                return {
+                    "status": "success",
+                    "message": f"Pause requested for document {document_id}"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": "Failed to pause task"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error pausing document {document_id}: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def resume_document_processing(
+        self, 
+        document_id: str, 
+        celery_task_id: str
+    ) -> Dict[str, Any]:
+        """
+        Resume paused document processing.
+        
+        Args:
+            document_id: Document ID to resume
+            celery_task_id: New Celery task ID for resumed processing
+            
+        Returns:
+            Dictionary with resume status
+        """
+        try:
+            if not self.task_state_manager:
+                return {
+                    "status": "error",
+                    "error": "Task management not available"
+                }
+            
+            success = self.task_state_manager.resume_task(document_id, celery_task_id)
+            
+            if success:
+                # Update document repository
+                self.doc_repository.mark_task_as_resumed(document_id)
+                return {
+                    "status": "success",
+                    "message": f"Resumed processing for document {document_id}"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": "Failed to resume task"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error resuming document {document_id}: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def cancel_document_processing(self, document_id: str) -> Dict[str, Any]:
+        """
+        Cancel document processing.
+        
+        Args:
+            document_id: Document ID to cancel
+            
+        Returns:
+            Dictionary with cancel status
+        """
+        try:
+            if not self.task_state_manager:
+                return {
+                    "status": "error",
+                    "error": "Task management not available"
+                }
+            
+            success = self.task_state_manager.cancel_task(document_id)
+            
+            if success:
+                # Update document repository
+                self.doc_repository.mark_task_as_cancelled(document_id)
+                return {
+                    "status": "success",
+                    "message": f"Cancelled processing for document {document_id}"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": "Failed to cancel task"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error cancelling document {document_id}: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def _execute_processing_pipeline_with_control(
+        self,
+        state_manager: ProcessingStateManager,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Execute the processing pipeline with pause/resume/cancel control.
+        Enhanced version of the original pipeline execution.
+        
+        Args:
+            state_manager: Processing state manager with task control
+            context: Processing context
+            
+        Returns:
+            Dictionary with processing results or control actions
+        """
+        
+        # Define stage execution order
+        stage_order = [
+            ProcessingStage.EXTRACTION.value,
+            ProcessingStage.CHUNKING.value,
+            ProcessingStage.EMBEDDING.value,
+            ProcessingStage.TREE_BUILDING.value,
+            ProcessingStage.VECTOR_STORAGE.value
+        ]
+        
+        current_stage = state_manager.get_current_stage()
+        completed_stages = state_manager.get_completed_stages()
+        
+        # Find starting point in pipeline
+        start_index = 0
+        if current_stage in stage_order:
+            start_index = stage_order.index(current_stage)
+        elif current_stage == ProcessingStage.UPLOAD.value:
+            # If current stage is upload and it's complete, start from extraction
+            if state_manager.is_stage_complete(ProcessingStage.UPLOAD.value):
+                start_index = 0  # Start from extraction
+                # Advance to extraction stage
+                state_manager.processing_state["current_stage"] = ProcessingStage.EXTRACTION.value
+                state_manager._save_processing_state()
+                logger.info(f"Advanced from upload to extraction for document {context['document_id']}")
+            else:
+                return {
+                    "status": "error",
+                    "error": "Upload stage not completed",
+                    "failed_stage": ProcessingStage.UPLOAD.value
+                }
+        
+        logger.info(f"Starting processing pipeline for document {context['document_id']} from stage {current_stage}")
+        
+        # Execute stages in order with control checks
+        last_result = {}
+        for i in range(start_index, len(stage_order)):
+            stage = stage_order[i]
+            
+            # Check for cancellation before each stage
+            if state_manager.check_cancel_requested():
+                logger.info(f"Cancellation requested for document {context['document_id']} at stage {stage}")
+                return {
+                    "status": "cancelled",
+                    "cancelled_stage": stage,
+                    "message": "Processing cancelled by user request"
+                }
+            
+            # Check for pause before each stage
+            if state_manager.check_pause_requested():
+                logger.info(f"Pause requested for document {context['document_id']} at stage {stage}")
+                # Save checkpoint for current stage
+                checkpoint_data = {
+                    "stage": stage,
+                    "timestamp": datetime.now().isoformat(),
+                    "percent_complete": int((i / len(stage_order)) * 100)
+                }
+                state_manager.handle_pause_request(stage, checkpoint_data)
+                return {
+                    "status": "paused", 
+                    "paused_stage": stage,
+                    "message": "Processing paused by user request"
+                }
+            
+            # Skip completed stages
+            if stage in completed_stages:
+                logger.info(f"Skipping completed stage: {stage}")
+                continue
+            
+            # AUTO-ADVANCE: Try to advance to this stage if needed
+            if not self._advance_to_next_stage_if_needed(state_manager, stage):
+                # If we can't advance and stage isn't current, there's a problem
+                if state_manager.get_current_stage() != stage:
+                    error_msg = f"Cannot advance to stage {stage} from {state_manager.get_current_stage()}"
+                    logger.error(error_msg)
+                    return {
+                        "status": "error",
+                        "error": error_msg,
+                        "failed_stage": stage
+                    }
+            
+            processor = self.processors.get(stage)
+            if not processor:
+                error_msg = f"No processor found for stage: {stage}"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "failed_stage": stage
+                }
+            
+            # Now the stage should be ready - simpler check
+            if not processor.can_execute(state_manager, context):
+                error_msg = f"Stage {stage} processor reports it cannot execute"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "failed_stage": stage
+                }
+            
+            # Validate dependencies
+            if not processor.validate_dependencies(state_manager, context):
+                error_msg = f"Dependencies not met for stage {stage}"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "error": error_msg,
+                    "failed_stage": stage
+                }
+            
+            # Execute stage with periodic control checks
+            logger.info(f"Executing stage: {stage}")
+            result = self._execute_stage_with_control_checks(processor, state_manager, context, stage)
+            
+            if result["status"] == "cancelled":
+                return result
+            elif result["status"] == "paused":
+                return result
+            elif result["status"] != "success":
+                logger.error(f"Stage {stage} failed: {result.get('error')}")
+                return {
+                    "status": "error",
+                    "error": result.get("error"),
+                    "failed_stage": stage,
+                    "processing_time": result.get("processing_time", 0)
+                }
+            
+            last_result = result
+            logger.info(f"Stage {stage} completed successfully")
+        
+        logger.info(f"Processing pipeline completed successfully for document {context['document_id']}")
+        
+        return {
+            "status": "success",
+            **last_result
+        }
+    
+    def _execute_stage_with_control_checks(
+        self,
+        processor,
+        state_manager: ProcessingStateManager,
+        context: Dict[str, Any],
+        stage: str
+    ) -> Dict[str, Any]:
+        """
+        Execute a stage with periodic pause/cancel checks.
+        
+        Args:
+            processor: Stage processor instance
+            state_manager: Processing state manager
+            context: Processing context
+            stage: Current stage name
+            
+        Returns:
+            Stage execution result
+        """
+        try:
+            # Register Celery task for this stage
+            celery_task_id = context.get("celery_task_id")
+            if celery_task_id:
+                state_manager.register_celery_task(stage, celery_task_id)
+            
+            # Execute the stage processor
+            result = processor.execute(state_manager, context)
+            
+            # Final check for control requests after execution
+            if state_manager.check_cancel_requested():
+                return {
+                    "status": "cancelled",
+                    "cancelled_stage": stage,
+                    "message": "Processing cancelled during stage execution"
+                }
+            
+            if state_manager.check_pause_requested():
+                # If stage completed but pause was requested, we still pause
+                checkpoint_data = {
+                    "stage": stage,
+                    "completed": result["status"] == "success",
+                    "timestamp": datetime.now().isoformat()
+                }
+                state_manager.handle_pause_request(stage, checkpoint_data)
+                return {
+                    "status": "paused",
+                    "paused_stage": stage,
+                    "stage_result": result,
+                    "message": "Processing paused after stage completion"
+                }
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Error executing stage {stage}: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "status": "error",
+                "error": error_msg,
+                "failed_stage": stage
+            }
+    
     def retry_document_processing(
         self,
         document_id: str,
@@ -247,14 +658,7 @@ class PersistentUploadService:
     ) -> Dict[str, Any]:
         """
         Retry document processing from a specific stage or current failed stage.
-        
-        Args:
-            document_id: Document ID to retry
-            from_stage: Optional stage to retry from (if None, uses current stage)
-            case_id: Optional case ID for verification
-            
-        Returns:
-            Dictionary with retry status and information
+        Enhanced with task state management.
         """
         try:
             # Check for concurrent operations
@@ -283,6 +687,14 @@ class PersistentUploadService:
                     except:
                         pass  # If we can't read lock, proceed
             
+            # Create new workflow task for retry
+            if self.task_state_manager:
+                task_id = self.task_state_manager.create_workflow_task(
+                    document_id=document_id,
+                    initial_stage=from_stage or ProcessingStage.UPLOAD.value
+                )
+                logger.info(f"Created retry workflow task {task_id} for document {document_id}")
+            
             # Get document metadata
             document = self.doc_repository.get_document(document_id)
             if not document:
@@ -308,12 +720,13 @@ class PersistentUploadService:
             
             doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
             
-            # Initialize processing state manager with coordination
+            # Initialize processing state manager with coordination AND task state manager
             state_manager = ProcessingStateManager(
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
                 doc_dir=doc_dir,
-                doc_repository=self.doc_repository
+                doc_repository=self.doc_repository,
+                task_state_manager=self.task_state_manager  # NEW: Pass task state manager
             )
             
             # Reset to specified stage if provided
@@ -352,8 +765,8 @@ class PersistentUploadService:
                 "metadata": document.get("user_metadata", {})
             }
             
-            # Execute processing pipeline
-            pipeline_result = self._execute_processing_pipeline(state_manager, context)
+            # Execute processing pipeline with control support
+            pipeline_result = self._execute_processing_pipeline_with_control(state_manager, context)
             
             # Update document metadata based on result
             if pipeline_result["status"] == "success":
@@ -363,6 +776,18 @@ class PersistentUploadService:
                     "processing_state": state_manager.get_stage_status()
                 })
                 state_manager.mark_stage_complete(ProcessingStage.COMPLETED.value)
+                
+                # Mark as completed in task manager
+                if self.task_state_manager:
+                    self.task_state_manager.complete_task(document_id, success=True)
+                    
+            elif pipeline_result["status"] in ["paused", "cancelled"]:
+                self.doc_repository.update_document(document_id, {
+                    "status": pipeline_result["status"],
+                    f"{pipeline_result['status']}_stage": pipeline_result.get(f"{pipeline_result['status']}_stage"),
+                    f"{pipeline_result['status']}_time": datetime.now().isoformat(),
+                    "processing_state": state_manager.get_stage_status()
+                })
             else:
                 self.doc_repository.update_document(document_id, {
                     "status": "failed",
@@ -371,6 +796,14 @@ class PersistentUploadService:
                     "failure_time": datetime.now().isoformat(),
                     "processing_state": state_manager.get_stage_status()
                 })
+                
+                # Mark as failed in task manager
+                if self.task_state_manager:
+                    self.task_state_manager.complete_task(
+                        document_id,
+                        success=False,
+                        error_details={"error": pipeline_result.get("error")}
+                    )
             
             # Remove processing lock
             self._remove_processing_lock(doc_dir)
@@ -399,7 +832,7 @@ class PersistentUploadService:
             }
     
     def get_document_processing_status(self, document_id: str) -> Dict[str, Any]:
-        """Get detailed processing status for a document"""
+        """Get detailed processing status for a document with task control information"""
         try:
             # Get document metadata
             document = self.doc_repository.get_document(document_id)
@@ -411,21 +844,45 @@ class PersistentUploadService:
             
             doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
             
-            # Initialize processing state manager
+            # Initialize processing state manager with task state manager
             state_manager = ProcessingStateManager(
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
                 doc_dir=doc_dir,
-                doc_repository=self.doc_repository
+                doc_repository=self.doc_repository,
+                task_state_manager=self.task_state_manager
             )
             
-            # Get comprehensive status
+            # Get comprehensive status including task control information
             processing_status = state_manager.get_stage_status()
+            
+            # Add task control status if available
+            task_control_status = {}
+            if self.task_state_manager:
+                task = self.task_state_manager.get_task_status(document_id)
+                if task:
+                    task_control_status = {
+                        "task_status": task.task_status,
+                        "can_pause": task.can_pause,
+                        "can_resume": task.can_resume,
+                        "can_cancel": task.can_cancel,
+                        "pause_requested": task.pause_requested,
+                        "cancel_requested": task.cancel_requested,
+                        "percent_complete": task.percent_complete,
+                        "worker_info": {
+                            "worker_id": task.worker_id,
+                            "worker_hostname": task.worker_hostname
+                        },
+                        "celery_task_id": task.celery_task_id,
+                        "retry_count": task.retry_count,
+                        "max_retries": task.max_retries
+                    }
             
             return {
                 "status": "success",
                 "document_metadata": document,
-                "processing_status": processing_status
+                "processing_status": processing_status,
+                "task_control_status": task_control_status
             }
             
         except Exception as e:
@@ -435,15 +892,11 @@ class PersistentUploadService:
                 "error": str(e)
             }
     
-    def _initialize_document_processing(
-        self,
-        document_id: str,
-        case_id: str,
-        file_path: str,
-        metadata: Optional[Dict[str, Any]],
-        force_restart: bool
-    ) -> Dict[str, Any]:
-        """Initialize document processing setup"""
+    # Include all other existing methods from the original class...
+    # (keeping the rest of the methods unchanged for brevity)
+    
+    def _initialize_document_processing(self, document_id: str, case_id: str, file_path: str, metadata: Optional[Dict[str, Any]], force_restart: bool) -> Dict[str, Any]:
+        """Initialize document processing setup (unchanged)"""
         try:
             # Create document directory path
             doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
@@ -489,7 +942,8 @@ class PersistentUploadService:
                 document_id=document_id,
                 storage_adapter=self.storage_adapter,
                 doc_dir=doc_dir,
-                doc_repository=self.doc_repository
+                doc_repository=self.doc_repository,
+                task_state_manager=self.task_state_manager
             )
             
             # Mark upload stage as complete if file exists (either stored or original)
@@ -539,137 +993,13 @@ class PersistentUploadService:
                 "error": str(e)
             }
     
-    def _execute_processing_pipeline(
-        self,
-        state_manager: ProcessingStateManager,
-        context: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute the processing pipeline from current stage with auto-advancement"""
-        
-        # Define stage execution order
-        stage_order = [
-            ProcessingStage.EXTRACTION.value,
-            ProcessingStage.CHUNKING.value,
-            ProcessingStage.EMBEDDING.value,
-            ProcessingStage.TREE_BUILDING.value,
-            ProcessingStage.VECTOR_STORAGE.value
-        ]
-        
-        current_stage = state_manager.get_current_stage()
-        completed_stages = state_manager.get_completed_stages()
-        
-        # Find starting point in pipeline
-        start_index = 0
-        if current_stage in stage_order:
-            start_index = stage_order.index(current_stage)
-        elif current_stage == ProcessingStage.UPLOAD.value:
-            # If current stage is upload and it's complete, start from extraction
-            if state_manager.is_stage_complete(ProcessingStage.UPLOAD.value):
-                start_index = 0  # Start from extraction
-                # Advance to extraction stage
-                state_manager.processing_state["current_stage"] = ProcessingStage.EXTRACTION.value
-                state_manager._save_processing_state()
-                logger.info(f"Advanced from upload to extraction for document {context['document_id']}")
-            else:
-                return {
-                    "status": "error",
-                    "error": "Upload stage not completed",
-                    "failed_stage": ProcessingStage.UPLOAD.value
-                }
-        
-        logger.info(f"Starting processing pipeline for document {context['document_id']} from stage {current_stage}")
-        
-        # Execute stages in order
-        last_result = {}
-        for i in range(start_index, len(stage_order)):
-            stage = stage_order[i]
-            
-            # Skip completed stages
-            if stage in completed_stages:
-                logger.info(f"Skipping completed stage: {stage}")
-                continue
-            
-            # AUTO-ADVANCE: Try to advance to this stage if needed
-            if not self._advance_to_next_stage_if_needed(state_manager, stage):
-                # If we can't advance and stage isn't current, there's a problem
-                if state_manager.get_current_stage() != stage:
-                    error_msg = f"Cannot advance to stage {stage} from {state_manager.get_current_stage()}"
-                    logger.error(error_msg)
-                    return {
-                        "status": "error",
-                        "error": error_msg,
-                        "failed_stage": stage
-                    }
-            
-            processor = self.processors.get(stage)
-            if not processor:
-                error_msg = f"No processor found for stage: {stage}"
-                logger.error(error_msg)
-                return {
-                    "status": "error",
-                    "error": error_msg,
-                    "failed_stage": stage
-                }
-            
-            # Now the stage should be ready - simpler check
-            if not processor.can_execute(state_manager, context):
-                error_msg = f"Stage {stage} processor reports it cannot execute"
-                logger.error(error_msg)
-                return {
-                    "status": "error",
-                    "error": error_msg,
-                    "failed_stage": stage
-                }
-            
-            # Validate dependencies
-            if not processor.validate_dependencies(state_manager, context):
-                error_msg = f"Dependencies not met for stage {stage}"
-                logger.error(error_msg)
-                return {
-                    "status": "error",
-                    "error": error_msg,
-                    "failed_stage": stage
-                }
-            
-            # Execute stage
-            logger.info(f"Executing stage: {stage}")
-            result = processor.execute(state_manager, context)
-            
-            if result["status"] != "success":
-                logger.error(f"Stage {stage} failed: {result.get('error')}")
-                return {
-                    "status": "error",
-                    "error": result.get("error"),
-                    "failed_stage": stage,
-                    "processing_time": result.get("processing_time", 0)
-                }
-            
-            last_result = result
-            logger.info(f"Stage {stage} completed successfully")
-        
-        logger.info(f"Processing pipeline completed successfully for document {context['document_id']}")
-        
-        return {
-            "status": "success",
-            **last_result
-        }
-    
     def _is_valid_stage(self, stage: str) -> bool:
         """Check if a stage name is valid"""
         valid_stages = [s.value for s in ProcessingStage]
         return stage in valid_stages
     
     def _advance_to_next_stage_if_needed(self, state_manager: ProcessingStateManager, target_stage: str) -> bool:
-        """
-        Advance processing state to target stage if prerequisites are met.
-        
-        Args:
-            state_manager: Processing state manager
-            target_stage: Stage we want to execute
-            
-        Returns:
-            True if stage is ready for execution, False otherwise
-        """
+        """Advance processing state to target stage if prerequisites are met (unchanged)"""
         current_stage = state_manager.get_current_stage()
         
         # Define stage progression
@@ -723,7 +1053,7 @@ class PersistentUploadService:
         return False
     
     def _create_processing_lock(self, doc_dir: str):
-        """Create a processing lock file to prevent concurrent operations"""
+        """Create a processing lock file to prevent concurrent operations (unchanged)"""
         try:
             stages_dir = os.path.join(doc_dir, "stages")
             self.storage_adapter.create_directory(stages_dir)
@@ -740,7 +1070,7 @@ class PersistentUploadService:
             logger.warning(f"Failed to create processing lock: {str(e)}")
     
     def _remove_processing_lock(self, doc_dir: str):
-        """Remove the processing lock file"""
+        """Remove the processing lock file (unchanged)"""
         try:
             lock_file = os.path.join(doc_dir, "stages", "processing.lock")
             if self.storage_adapter.file_exists(lock_file):
@@ -750,7 +1080,7 @@ class PersistentUploadService:
             logger.warning(f"Failed to remove processing lock: {str(e)}")
             
     def _cleanup_stale_locks_on_startup(self):
-        """Clean up stale locks when service starts (after server restart)"""
+        """Clean up stale locks when service starts (unchanged)"""
         try:
             cleanup_result = self.cleanup_stale_locks()
             if cleanup_result["cleaned_documents"] > 0:
@@ -759,15 +1089,7 @@ class PersistentUploadService:
             logger.error(f"Error during startup lock cleanup: {str(e)}")
 
     def cleanup_stale_locks(self, max_lock_age_minutes: int = 10) -> Dict[str, Any]:
-        """
-        Clean up stale processing locks across all documents.
-        
-        Args:
-            max_lock_age_minutes: Maximum age of locks before considering them stale
-            
-        Returns:
-            Dictionary with cleanup results
-        """
+        """Clean up stale processing locks across all documents (unchanged)"""
         try:
             # Get all documents with processing status
             all_documents = self.doc_repository.list_documents()
