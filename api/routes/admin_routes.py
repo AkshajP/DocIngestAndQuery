@@ -155,7 +155,7 @@ async def upload_new_document(
     case_id: str = Form("default"),
     admin_user: str = Depends(get_admin_user)
 ):
-    """Upload and process a new document."""
+    """Upload and process a new document using Celery tasks."""
     temp_file_path = f"/tmp/{file.filename}"
     
     try:
@@ -170,21 +170,32 @@ async def upload_new_document(
                           if c.isalnum() or c == '_')
         document_id = f"doc_{timestamp}_{safe_name}"
         
-        # Queue document processing in background
-        background_tasks.add_task(
-            upload_document,
+        # Start Celery processing chain
+        from services.document.upload import upload_document_with_celery
+        result = upload_document_with_celery(
             file_path=temp_file_path,
             document_id=document_id,
             case_id=case_id
         )
         
-        return {
-            "status": "pending",
-            "message": "Document upload initiated. Processing will start shortly.",
-            "document_id": document_id
-        }
+        if result["status"] == "processing":
+            return {
+                "status": "processing",
+                "message": "Document upload initiated. Processing started with Celery.",
+                "document_id": document_id,
+                "celery_task_id": result["celery_task_id"],
+                "task_control": result["task_control"]
+            }
+        else:
+            return result
         
     except Exception as e:
+        # Clean up temp file
+        try:
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+        except:
+            pass
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 @router.post("/documents/{document_id}/retry")

@@ -16,8 +16,19 @@ class TaskStateManager:
     Handles task lifecycle, status transitions, and pause/resume/cancel operations.
     """
     
-    def __init__(self, connection_string: Optional[str] = None):
+    def __init__(self, connection_string: Optional[str] = None, config=None):
         """Initialize task state manager with database repository"""
+        if connection_string is None:
+            # Try to get connection string from config
+            try:
+                if config:
+                    config = config
+                    connection_string = config.database.connection_string
+            except Exception as e:
+                logger.warning(f"Could not get connection string from config: {str(e)}")
+                # Fall back to environment or default
+                pass
+        
         self.tasks_repo = DocumentTasksRepository(connection_string)
     
     def create_workflow_task(

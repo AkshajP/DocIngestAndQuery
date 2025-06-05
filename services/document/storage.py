@@ -44,8 +44,20 @@ class LocalStorageAdapter(StorageAdapter):
     """Local filesystem implementation of StorageAdapter."""
     
     def write_file(self, content: Any, path: str) -> bool:
+        """Write content to a file path with improved error handling."""
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            # Ensure parent directory exists
+            parent_dir = os.path.dirname(path)
+            if parent_dir and not os.path.exists(parent_dir):
+                if not self.create_directory(parent_dir):
+                    logger.error(f"Failed to create parent directory for {path}")
+                    return False
+            
+            # Check if we can write to the parent directory
+            if not os.access(parent_dir or '.', os.W_OK):
+                logger.error(f"No write permission for directory: {parent_dir}")
+                return False
+                
             if isinstance(content, str):
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(content)
@@ -55,7 +67,17 @@ class LocalStorageAdapter(StorageAdapter):
             else:
                 with open(path, 'wb') as f:
                     pickle.dump(content, f)
+                    
+            # Verify file was written
+            if not os.path.exists(path):
+                logger.error(f"File write verification failed: {path}")
+                return False
+                
+            logger.debug(f"Successfully wrote file: {path}")
             return True
+        except PermissionError as e:
+            logger.error(f"Permission denied writing file {path}: {str(e)}")
+            return False
         except Exception as e:
             logger.error(f"Error writing to file {path}: {str(e)}")
             return False
@@ -92,9 +114,25 @@ class LocalStorageAdapter(StorageAdapter):
         return os.path.exists(path)
     
     def create_directory(self, path: str) -> bool:
+        """Create a directory at the given path with proper error handling."""
         try:
-            os.makedirs(path, exist_ok=True)
+            # Ensure parent directories exist with proper permissions
+            os.makedirs(path, mode=0o755, exist_ok=True)
+            
+            # Verify the directory was created and is writable
+            if not os.path.exists(path):
+                logger.error(f"Directory creation failed: {path}")
+                return False
+                
+            if not os.access(path, os.W_OK):
+                logger.error(f"Directory not writable: {path}")
+                return False
+                
+            logger.debug(f"Successfully created directory: {path}")
             return True
+        except PermissionError as e:
+            logger.error(f"Permission denied creating directory {path}: {str(e)}")
+            return False
         except Exception as e:
             logger.error(f"Error creating directory {path}: {str(e)}")
             return False

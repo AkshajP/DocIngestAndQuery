@@ -896,7 +896,7 @@ class PersistentUploadService:
     # (keeping the rest of the methods unchanged for brevity)
     
     def _initialize_document_processing(self, document_id: str, case_id: str, file_path: str, metadata: Optional[Dict[str, Any]], force_restart: bool) -> Dict[str, Any]:
-        """Initialize document processing setup (unchanged)"""
+        """Initialize document processing setup with improved error handling"""
         try:
             # Create document directory path
             doc_dir = os.path.join(self.config.storage.storage_dir, document_id)
@@ -904,7 +904,11 @@ class PersistentUploadService:
             target_path = os.path.join(doc_dir, target_filename)
             
             # Create the directory if it doesn't exist
-            self.storage_adapter.create_directory(doc_dir)
+            if not self.storage_adapter.create_directory(doc_dir):
+                return {
+                    "status": "error",
+                    "error": f"Failed to create document directory: {doc_dir}"
+                }
             
             # Check if document already exists in registry
             existing_doc = self.doc_repository.get_document(document_id)
@@ -913,29 +917,56 @@ class PersistentUploadService:
             stored_file_path = file_path  # Default fallback
             
             if existing_doc and not force_restart:
-                # Document exists, return existing paths
+                # Document exists, check if stored file is valid
                 stored_file_path = existing_doc.get("stored_file_path", target_path)
-                logger.info(f"Document {document_id} already exists, using existing setup")
+                logger.info(f"Document {document_id} already exists, checking stored file")
                 
                 # Verify file exists
                 if self.storage_adapter.file_exists(stored_file_path):
                     storage_success = True
+                    logger.info(f"Using existing stored file: {stored_file_path}")
                 else:
                     logger.warning(f"Stored file not found at {stored_file_path}, will re-store")
             
             # Store the original file if needed
             if not storage_success:
-                with open(file_path, 'rb') as f:
-                    file_content = f.read()
+                logger.info(f"Storing file from {file_path} to {target_path}")
                 
-                storage_success = self.storage_adapter.write_file(file_content, target_path)
-                
-                if not storage_success:
-                    logger.warning(f"Failed to save original PDF to {target_path}")
-                    stored_file_path = file_path  # Fall back to original path
-                else:
-                    logger.info(f"Successfully saved original PDF to {target_path}")
-                    stored_file_path = target_path
+                try:
+                    with open(file_path, 'rb') as f:
+                        file_content = f.read()
+                    
+                    storage_success = self.storage_adapter.write_file(file_content, target_path)
+                    
+                    if storage_success:
+                        logger.info(f"Successfully saved original PDF to {target_path}")
+                        stored_file_path = target_path
+                    else:
+                        logger.error(f"Failed to save original PDF to {target_path}")
+                        # Check if original file is accessible as fallback
+                        if os.path.exists(file_path) and os.access(file_path, os.R_OK):
+                            logger.info(f"Using original file path as fallback: {file_path}")
+                            stored_file_path = file_path
+                            storage_success = True
+                        else:
+                            return {
+                                "status": "error", 
+                                "error": f"Cannot access source file and failed to store: {file_path}"
+                            }
+                            
+                except Exception as e:
+                    logger.error(f"Error reading source file {file_path}: {str(e)}")
+                    return {
+                        "status": "error",
+                        "error": f"Error reading source file: {str(e)}"
+                    }
+            
+            # Verify final file accessibility
+            if not (self.storage_adapter.file_exists(stored_file_path) or os.path.exists(stored_file_path)):
+                return {
+                    "status": "error",
+                    "error": f"File not accessible after storage operations: {stored_file_path}"
+                }
             
             # Initialize processing state manager and mark upload complete
             temp_state_manager = ProcessingStateManager(
@@ -946,20 +977,9 @@ class PersistentUploadService:
                 task_state_manager=self.task_state_manager
             )
             
-            # Mark upload stage as complete if file exists (either stored or original)
-            file_exists = (storage_success or 
-                          self.storage_adapter.file_exists(stored_file_path) or 
-                          os.path.exists(stored_file_path))
-                          
-            if file_exists:
-                temp_state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value)
-                logger.info(f"Marked upload stage as complete for document {document_id}")
-            else:
-                logger.error(f"Cannot mark upload complete - file not accessible: {stored_file_path}")
-                return {
-                    "status": "error",
-                    "error": f"File not accessible after upload: {stored_file_path}"
-                }
+            # Mark upload stage as complete
+            temp_state_manager.mark_stage_complete(ProcessingStage.UPLOAD.value)
+            logger.info(f"Marked upload stage as complete for document {document_id}")
             
             # Initialize or update document metadata
             doc_metadata = {
@@ -968,20 +988,35 @@ class PersistentUploadService:
                 "original_filename": os.path.basename(file_path),
                 "original_file_path": file_path,
                 "stored_file_path": stored_file_path,
+                "doc_dir": doc_dir,  # Store doc_dir in metadata
                 "file_type": os.path.splitext(file_path)[1].lower()[1:],
                 "processing_start_time": datetime.now().isoformat(),
-                "status": "processing",
+                "status": "initializing",  # Will be updated to "processing" when Celery starts
                 "user_metadata": metadata or {},
-                "processing_state": temp_state_manager.get_stage_status()
+                "processing_state": temp_state_manager.get_stage_status(),
+                "can_pause": True,
+                "can_resume": False,
+                "can_cancel": True
             }
             
+            # Add or update document in repository
             if existing_doc:
-                self.doc_repository.update_document(document_id, doc_metadata)
+                success = self.doc_repository.update_document(document_id, doc_metadata)
+                logger.info(f"Updated existing document {document_id} in repository")
             else:
-                self.doc_repository.add_document(doc_metadata)
+                success = self.doc_repository.add_document(doc_metadata)
+                logger.info(f"Added new document {document_id} to repository")
+            
+            if not success:
+                logger.error(f"Failed to save document metadata for {document_id}")
+                return {
+                    "status": "error",
+                    "error": "Failed to save document metadata"
+                }
             
             return {
                 "status": "success",
+                "document_id": document_id,
                 "doc_dir": doc_dir,
                 "stored_file_path": stored_file_path
             }

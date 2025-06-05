@@ -31,6 +31,12 @@ celery_app.conf.update(
     # Task routing
     task_routes={
         'services.celery.tasks.document_tasks.*': {'queue': 'document_processing'},
+        'services.celery.tasks.document_tasks.extract_document_task': {'queue': 'document_processing'},
+        'services.celery.tasks.document_tasks.chunk_document_task': {'queue': 'document_processing'},
+        'services.celery.tasks.document_tasks.embed_document_task': {'queue': 'document_processing'},
+        'services.celery.tasks.document_tasks.build_tree_task': {'queue': 'document_processing'},
+        'services.celery.tasks.document_tasks.store_vectors_task': {'queue': 'document_processing'},
+        'services.celery.tasks.document_tasks.start_document_processing_chain': {'queue': 'document_processing'},
     },
     
     # Worker configuration

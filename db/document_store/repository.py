@@ -58,7 +58,7 @@ class DocumentMetadataRepository:
         }
     
     def _save_registry(self):
-        """Save the document registry to disk"""
+        """Save the document registry to disk with enhanced error handling."""
         with self.metadata_lock:
             try:
                 # Update last updated timestamp
@@ -67,26 +67,79 @@ class DocumentMetadataRepository:
                 # Create directory if it doesn't exist
                 self._ensure_storage_directory()
                 
-                # Write to file
-                with open(self.storage_path, 'w', encoding='utf-8') as f:
-                    json.dump(self.registry, f, indent=2)
+                # Create backup of existing file
+                backup_path = None
+                if os.path.exists(self.storage_path):
+                    backup_path = f"{self.storage_path}.backup"
+                    try:
+                        import shutil
+                        shutil.copy2(self.storage_path, backup_path)
+                    except Exception as e:
+                        logger.warning(f"Could not create backup: {str(e)}")
                 
-                logger.info(f"Saved document registry to {self.storage_path}")
-                return True
+                # Write to temporary file first
+                temp_path = f"{self.storage_path}.tmp"
+                try:
+                    with open(temp_path, 'w', encoding='utf-8') as f:
+                        json.dump(self.registry, f, indent=2)
+                    
+                    # Atomic move to final location
+                    if os.name == 'nt':  # Windows
+                        if os.path.exists(self.storage_path):
+                            os.remove(self.storage_path)
+                        os.rename(temp_path, self.storage_path)
+                    else:  # Unix/Linux
+                        os.rename(temp_path, self.storage_path)
+                    
+                    logger.debug(f"Successfully saved document registry to {self.storage_path}")
+                    
+                    # Verify the file was written correctly
+                    if not os.path.exists(self.storage_path):
+                        logger.error(f"Registry file does not exist after save: {self.storage_path}")
+                        return False
+                    
+                    # Try to read it back to verify
+                    try:
+                        with open(self.storage_path, 'r', encoding='utf-8') as f:
+                            test_load = json.load(f)
+                        logger.debug("Registry file verification successful")
+                    except Exception as e:
+                        logger.error(f"Registry file verification failed: {str(e)}")
+                        # Restore from backup if possible
+                        if backup_path and os.path.exists(backup_path):
+                            try:
+                                import shutil
+                                shutil.copy2(backup_path, self.storage_path)
+                                logger.info("Restored registry from backup")
+                            except:
+                                pass
+                        return False
+                    
+                    # Clean up backup
+                    if backup_path and os.path.exists(backup_path):
+                        try:
+                            os.remove(backup_path)
+                        except:
+                            pass
+                    
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Error writing registry file: {str(e)}")
+                    # Clean up temp file
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except:
+                            pass
+                    return False
+                    
             except Exception as e:
                 logger.error(f"Error saving document registry: {str(e)}")
                 return False
     
     def add_document(self, document_metadata: Dict[str, Any]) -> bool:
-        """
-        Add a document to the registry.
-        
-        Args:
-            document_metadata: Document metadata dictionary
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Add a document to the registry with enhanced error handling."""
         with self.metadata_lock:
             try:
                 document_id = document_metadata.get("document_id")
@@ -107,35 +160,57 @@ class DocumentMetadataRepository:
                 if "can_cancel" not in document_metadata:
                     document_metadata["can_cancel"] = True
                 
-                # Ensure document_id exists in metadata
+                # Add timestamp
+                document_metadata["added_at"] = datetime.now().isoformat()
+                
+                # Store in registry
                 self.registry["documents"][document_id] = document_metadata
                 
-                # Save to disk
-                return self._save_registry()
+                # Save to disk immediately
+                save_success = self._save_registry()
+                
+                if save_success:
+                    logger.info(f"Successfully added document {document_id} to registry")
+                    
+                    # Verify the document was actually saved
+                    verification_doc = self.registry["documents"].get(document_id)
+                    if not verification_doc:
+                        logger.error(f"Document {document_id} not found after add operation")
+                        return False
+                        
+                    logger.debug(f"Document {document_id} verification successful")
+                    return True
+                else:
+                    logger.error(f"Failed to save registry after adding document {document_id}")
+                    # Remove from memory if save failed
+                    if document_id in self.registry["documents"]:
+                        del self.registry["documents"][document_id]
+                    return False
+                    
             except Exception as e:
                 logger.error(f"Error adding document to registry: {str(e)}")
+                # Clean up on error
+                try:
+                    if document_id and document_id in self.registry["documents"]:
+                        del self.registry["documents"][document_id]
+                except:
+                    pass
                 return False
+
     
     def update_document(self, document_id: str, metadata_updates: Dict[str, Any]) -> bool:
-        """
-        Update document metadata.
-        
-        Args:
-            document_id: Document ID
-            metadata_updates: Dictionary of metadata updates
-            
-        Returns:
-            True if successful, False otherwise
-        """
+        """Update document metadata with enhanced error handling."""
         with self.metadata_lock:
             try:
                 if document_id not in self.registry["documents"]:
-                    logger.warning(f"Document {document_id} not found in registry for update")
+                    logger.error(f"Document {document_id} not found in registry for update")
+                    # Log what documents ARE in the registry for debugging
+                    available_docs = list(self.registry["documents"].keys())
+                    logger.debug(f"Available documents in registry: {available_docs}")
                     return False
                 
-                # Update document metadata
+                # Get current metadata
                 current_metadata = self.registry["documents"][document_id]
-                updated_metadata = {**current_metadata, **metadata_updates}
                 
                 # Update processing time if processing has completed
                 if ("status" in metadata_updates and 
@@ -147,13 +222,29 @@ class DocumentMetadataRepository:
                         start_time = datetime.fromisoformat(current_metadata["processing_start_time"])
                         end_time = datetime.now()
                         processing_time = (end_time - start_time).total_seconds()
-                        updated_metadata["processing_time"] = processing_time
+                        metadata_updates["processing_time"] = processing_time
+                
+                # Add update timestamp
+                metadata_updates["updated_at"] = datetime.now().isoformat()
+                
+                # Merge updates with current metadata
+                updated_metadata = {**current_metadata, **metadata_updates}
                 
                 # Update document in registry
                 self.registry["documents"][document_id] = updated_metadata
                 
                 # Save to disk
-                return self._save_registry()
+                save_success = self._save_registry()
+                
+                if save_success:
+                    logger.debug(f"Successfully updated document {document_id}")
+                    return True
+                else:
+                    logger.error(f"Failed to save registry after updating document {document_id}")
+                    # Restore original metadata on save failure
+                    self.registry["documents"][document_id] = current_metadata
+                    return False
+                    
             except Exception as e:
                 logger.error(f"Error updating document in registry: {str(e)}")
                 return False
