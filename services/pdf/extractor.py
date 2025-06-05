@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 class PDFExtractor:
     """
     Handles PDF extraction using MinerU to extract content with spatial information.
+    Enhanced with better error handling and debugging.
     """
     
     def __init__(self, language: str = 'en'):
@@ -24,7 +25,7 @@ class PDFExtractor:
     def extract_content(self, pdf_path: str, save_images: bool = True, output_dir: Optional[str] = None, 
                        storage_adapter=None) -> Dict[str, Any]:
         """
-        Extract content from a PDF file using MinerU.
+        Extract content from a PDF file using MinerU with enhanced error handling.
         
         Args:
             pdf_path: Path to the PDF file
@@ -38,22 +39,95 @@ class PDFExtractor:
         try:
             logger.info(f"Extracting content from PDF: {pdf_path}")
             
-            # Process PDF with MinerU
-            extraction_result = ingest_pdf(
-                pdf_path,
-                lang=self.language
-            )
+            # Validate file before processing
+            if not os.path.exists(pdf_path):
+                error_msg = f"PDF file not found: {pdf_path}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
             
+            file_size = os.path.getsize(pdf_path)
+            logger.info(f"PDF file size: {file_size} bytes")
+            
+            if file_size == 0:
+                error_msg = f"PDF file is empty: {pdf_path}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
+            
+            # Test file readability
+            try:
+                with open(pdf_path, 'rb') as f:
+                    header = f.read(5)
+                    if not header.startswith(b'%PDF-'):
+                        error_msg = f"File is not a valid PDF: {pdf_path}"
+                        logger.error(error_msg)
+                        return {"status": "error", "message": error_msg}
+            except Exception as e:
+                error_msg = f"Cannot read PDF file: {pdf_path} - {str(e)}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
+            
+            # Log MinerU configuration
+            logger.info(f"Starting MinerU extraction with language: {self.language}")
+            
+            # Process PDF with MinerU - with detailed error capture
+            try:
+                extraction_result = ingest_pdf(
+                    pdf_path,
+                    lang=self.language,
+                    dump_intermediate=True,  # Enable intermediate files for debugging
+                    output_dir=output_dir
+                )
+                
+                logger.info(f"MinerU extraction completed, result type: {type(extraction_result)}")
+                
+            except ImportError as e:
+                error_msg = f"MinerU import error - check magic-pdf installation: {str(e)}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
+            except FileNotFoundError as e:
+                error_msg = f"File not found during MinerU processing: {str(e)}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
+            except Exception as e:
+                error_msg = f"MinerU processing error: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                return {"status": "error", "message": error_msg}
+            
+            # Check if extraction result is valid
             if not extraction_result:
-                logger.error(f"Failed to extract content from PDF: {pdf_path}")
-                return {"status": "error", "message": "Extraction failed"}
+                error_msg = f"MinerU returned empty result for PDF: {pdf_path}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
             
+            if not isinstance(extraction_result, dict):
+                error_msg = f"MinerU returned invalid result type: {type(extraction_result)}"
+                logger.error(error_msg)
+                return {"status": "error", "message": error_msg}
+            
+            # Validate extraction result structure
             content_list = extraction_result.get("content_list", [])
             images = extraction_result.get("images", {})
             
+            logger.info(f"Extraction successful - Content items: {len(content_list)}, Images: {len(images)}")
+            
+            if len(content_list) == 0:
+                logger.warning(f"No content extracted from PDF: {pdf_path}")
+                # Don't fail completely, return empty result
+                return {
+                    "status": "success", 
+                    "content_list": [],
+                    "images": [],
+                    "page_count": 0,
+                    "warning": "No content extracted from PDF"
+                }
+            
             # Save extracted images if requested
             if save_images and images:
-                self._save_images(images, output_dir, storage_adapter)
+                try:
+                    self._save_images(images, output_dir, storage_adapter)
+                except Exception as e:
+                    logger.warning(f"Failed to save images: {str(e)}")
+                    # Don't fail the entire extraction for image save issues
             
             logger.info(f"Successfully extracted {len(content_list)} content items and {len(images)} images")
             
@@ -66,8 +140,9 @@ class PDFExtractor:
             }
             
         except Exception as e:
-            logger.error(f"Error extracting PDF content: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            error_msg = f"Unexpected error extracting PDF content: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return {"status": "error", "message": error_msg}
     
     def _save_images(self, images: Dict[str, bytes], output_dir: Optional[str] = None, 
                     storage_adapter=None) -> None:

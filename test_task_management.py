@@ -30,7 +30,7 @@ def example_document_processing():
     print("=== Celery Document Processing Example ===")
     
     # Test document path - adjust this to your test file
-    test_file = '/Users/vikas/Downloads/pdf to kill/A0004.pdf'
+    test_file = '/Users/vikas/Downloads/layout-parser-paper.pdf'
     
     if not os.path.exists(test_file):
         print(f"Please create a test file at {test_file} or update the path")

@@ -1,231 +1,158 @@
 #!/usr/bin/env python3
 """
-Diagnostic utility to debug document registration issues.
+Diagnostic script to test PDF processing and identify issues.
+Run this to debug PDF extraction problems.
 """
-
 import os
 import sys
-import json
-from datetime import datetime
+import traceback
+from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-def diagnose_document_registration(document_id: str = None):
-    """Diagnose document registration issues"""
+def test_pdf_file(pdf_path):
+    """Test basic PDF file properties"""
+    print(f"=== PDF File Diagnostics ===")
+    print(f"File path: {pdf_path}")
     
-    print("=== Document Registration Diagnostics ===")
+    # Check if file exists
+    if not os.path.exists(pdf_path):
+        print("❌ File does not exist")
+        return False
+    print("✅ File exists")
+    
+    # Check file size
+    file_size = os.path.getsize(pdf_path)
+    print(f"✅ File size: {file_size:,} bytes")
+    
+    if file_size == 0:
+        print("❌ File is empty")
+        return False
+    
+    # Check if readable
+    try:
+        with open(pdf_path, 'rb') as f:
+            header = f.read(10)
+        print(f"✅ File is readable, header: {header}")
+        
+        # Check PDF header
+        if header.startswith(b'%PDF-'):
+            print("✅ Valid PDF header detected")
+        else:
+            print("❌ Invalid PDF header")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Cannot read file: {e}")
+        return False
+    
+    return True
+
+def test_magic_pdf_imports():
+    """Test magic_pdf imports"""
+    print(f"\n=== Magic PDF Import Test ===")
     
     try:
-        # 1. Check DocumentMetadataRepository
-        print("\n1. DocumentMetadataRepository Diagnostics:")
-        from db.document_store.repository import DocumentMetadataRepository
+        from magic_pdf.data.data_reader_writer import FileBasedDataWriter, FileBasedDataReader
+        print("✅ FileBasedDataWriter/Reader imported")
+    except ImportError as e:
+        print(f"❌ FileBasedDataWriter/Reader import failed: {e}")
+        return False
+    
+    try:
+        from magic_pdf.data.dataset import PymuDocDataset
+        print("✅ PymuDocDataset imported")
+    except ImportError as e:
+        print(f"❌ PymuDocDataset import failed: {e}")
+        return False
+    
+    try:
+        from magic_pdf.model.doc_analyze_by_custom_model import doc_analyze
+        print("✅ doc_analyze imported")
+    except ImportError as e:
+        print(f"❌ doc_analyze import failed: {e}")
+        return False
+    
+    try:
+        from magic_pdf.config.enums import SupportedPdfParseMethod
+        print("✅ SupportedPdfParseMethod imported")
+    except ImportError as e:
+        print(f"❌ SupportedPdfParseMethod import failed: {e}")
+        return False
+    
+    try:
+        import magic_pdf.model as model_config
+        print("✅ model_config imported")
+    except ImportError as e:
+        print(f"❌ model_config import failed: {e}")
+        return False
+    
+    return True
+
+def test_mineru_ingester(pdf_path):
+    """Test the mineru_ingester function"""
+    print(f"\n=== MinerU Ingester Test ===")
+    
+    try:
+        # Import the ingest_pdf function
+        sys.path.insert(0, '.')
+        from mineru_ingester import ingest_pdf
+        print("✅ ingest_pdf imported successfully")
         
-        doc_repo = DocumentMetadataRepository()
-        print(f"   Registry path: {doc_repo.storage_path}")
-        print(f"   Registry file exists: {os.path.exists(doc_repo.storage_path)}")
+        # Test with detailed error capture
+        print(f"Processing PDF: {pdf_path}")
+        result = ingest_pdf(pdf_path, lang='en', dump_intermediate=True)
         
-        if os.path.exists(doc_repo.storage_path):
-            print(f"   Registry file size: {os.path.getsize(doc_repo.storage_path)} bytes")
-            print(f"   Registry file readable: {os.access(doc_repo.storage_path, os.R_OK)}")
-            print(f"   Registry file writable: {os.access(doc_repo.storage_path, os.W_OK)}")
+        print(f"Result type: {type(result)}")
         
-        # Check registry contents
-        all_documents = doc_repo.list_documents()
-        print(f"   Total documents in registry: {len(all_documents)}")
+        if result is None:
+            print("❌ ingest_pdf returned None")
+            return False
         
-        if document_id:
-            specific_doc = doc_repo.get_document(document_id)
-            print(f"   Document '{document_id}' found: {specific_doc is not None}")
-            if specific_doc:
-                print(f"   Document status: {specific_doc.get('status')}")
-                print(f"   Document case_id: {specific_doc.get('case_id')}")
-        
-        # List all document IDs
-        if all_documents:
-            doc_ids = [doc.get('document_id', 'NO_ID') for doc in all_documents]
-            print(f"   Document IDs: {doc_ids}")
-        
-        # 2. Check TaskStateManager
-        print("\n2. TaskStateManager Diagnostics:")
-        try:
-            from services.celery.task_state_manager import TaskStateManager
+        if isinstance(result, dict):
+            content_list = result.get("content_list", [])
+            images = result.get("images", {})
+            print(f"✅ Content items: {len(content_list)}")
+            print(f"✅ Images: {len(images)}")
             
-            task_manager = TaskStateManager()
-            print(f"   TaskStateManager initialized: True")
-            print(f"   Connection string: {task_manager.tasks_repo.connection_string}")
-            
-            # Test database connection
-            try:
-                from db.document_store.document_tasks_repository import DocumentTasksRepository
-                test_repo = DocumentTasksRepository()
+            if len(content_list) == 0:
+                print("⚠️  No content extracted")
+            else:
+                print("✅ Content extraction successful")
                 
-                # Try a simple query
-                test_connection = test_repo._get_connection()
-                with test_connection.cursor() as cursor:
-                    cursor.execute("SELECT COUNT(*) FROM document_tasks")
-                    count = cursor.fetchone()[0]
-                    print(f"   Database connection: OK")
-                    print(f"   Total tasks in database: {count}")
-                test_connection.close()
-                
-            except Exception as db_error:
-                print(f"   Database connection: FAILED - {str(db_error)}")
-            
-            if document_id:
-                task = task_manager.get_task_status(document_id)
-                print(f"   Task for '{document_id}' found: {task is not None}")
-                if task:
-                    print(f"   Task status: {task.task_status}")
-                    print(f"   Task stage: {task.current_stage}")
-                    
-        except Exception as e:
-            print(f"   TaskStateManager error: {str(e)}")
-        
-        # 3. Check storage directories
-        print("\n3. Storage Directory Diagnostics:")
-        from core.config import get_config
-        config = get_config()
-        
-        storage_dir = config.storage.storage_dir
-        print(f"   Storage directory: {storage_dir}")
-        print(f"   Storage directory exists: {os.path.exists(storage_dir)}")
-        
-        if os.path.exists(storage_dir):
-            print(f"   Storage directory readable: {os.access(storage_dir, os.R_OK)}")
-            print(f"   Storage directory writable: {os.access(storage_dir, os.W_OK)}")
-            print(f"   Storage directory executable: {os.access(storage_dir, os.X_OK)}")
-            
-            # List subdirectories (should be document IDs)
-            try:
-                subdirs = [d for d in os.listdir(storage_dir) if os.path.isdir(os.path.join(storage_dir, d))]
-                print(f"   Document subdirectories: {subdirs}")
-                
-                if document_id and document_id in subdirs:
-                    doc_dir = os.path.join(storage_dir, document_id)
-                    print(f"   Document '{document_id}' directory exists: True")
-                    
-                    # Check for expected files
-                    original_pdf = os.path.join(doc_dir, "original.pdf")
-                    print(f"   Original PDF exists: {os.path.exists(original_pdf)}")
-                    
-                    stages_dir = os.path.join(doc_dir, "stages")
-                    print(f"   Stages directory exists: {os.path.exists(stages_dir)}")
-                    
-            except Exception as e:
-                print(f"   Error listing storage directory: {str(e)}")
-        
-        # 4. Test document creation
-        print("\n4. Document Creation Test:")
-        test_doc_id = f"diagnostic_test_{int(datetime.now().timestamp())}"
-        
-        test_metadata = {
-            "document_id": test_doc_id,
-            "case_id": "diagnostic_test",
-            "original_filename": "test.pdf",
-            "status": "test",
-            "test_created_at": datetime.now().isoformat()
-        }
-        
-        print(f"   Testing document creation with ID: {test_doc_id}")
-        
-        # Try to add document
-        add_success = doc_repo.add_document(test_metadata)
-        print(f"   Document add success: {add_success}")
-        
-        if add_success:
-            # Try to retrieve it
-            retrieved_doc = doc_repo.get_document(test_doc_id)
-            print(f"   Document retrieval success: {retrieved_doc is not None}")
-            
-            if retrieved_doc:
-                print(f"   Retrieved document status: {retrieved_doc.get('status')}")
-                
-                # Try to update it
-                update_success = doc_repo.update_document(test_doc_id, {"status": "updated"})
-                print(f"   Document update success: {update_success}")
-                
-                # Clean up test document
-                doc_repo.delete_document(test_doc_id)
-                print(f"   Test document cleaned up")
-            
-        # 5. Check file permissions
-        print("\n5. File Permissions Check:")
-        current_dir = os.getcwd()
-        print(f"   Current directory: {current_dir}")
-        print(f"   Current directory writable: {os.access(current_dir, os.W_OK)}")
-        
-        # Check umask
-        import stat
-        test_file = "permission_test.tmp"
-        try:
-            with open(test_file, 'w') as f:
-                f.write("test")
-            
-            file_stat = os.stat(test_file)
-            file_perms = stat.filemode(file_stat.st_mode)
-            print(f"   Created file permissions: {file_perms}")
-            
-            os.remove(test_file)
-        except Exception as e:
-            print(f"   Permission test failed: {str(e)}")
-        
-        print("\n=== Diagnostics Complete ===")
+        return True
         
     except Exception as e:
-        print(f"Error in diagnostics: {str(e)}")
-        import traceback
+        print(f"❌ ingest_pdf failed: {str(e)}")
+        print("Full traceback:")
         traceback.print_exc()
+        return False
 
-def test_specific_document(document_id: str):
-    """Test operations on a specific document"""
+def main():
+    """Main diagnostic function"""
+    if len(sys.argv) != 2:
+        print("Usage: python pdf_diagnostic.py <path_to_pdf>")
+        sys.exit(1)
     
-    print(f"\n=== Testing Document: {document_id} ===")
+    pdf_path = sys.argv[1]
     
-    try:
-        from db.document_store.repository import DocumentMetadataRepository
-        from services.celery.task_state_manager import TaskStateManager
-        
-        doc_repo = DocumentMetadataRepository()
-        task_manager = TaskStateManager()
-        
-        # 1. Check document existence
-        doc = doc_repo.get_document(document_id)
-        print(f"Document in repository: {doc is not None}")
-        
-        if doc:
-            print(f"  Status: {doc.get('status')}")
-            print(f"  Case ID: {doc.get('case_id')}")
-            print(f"  File path: {doc.get('stored_file_path')}")
-            
-            # Check if file exists
-            file_path = doc.get('stored_file_path')
-            if file_path:
-                print(f"  File exists: {os.path.exists(file_path)}")
-        
-        # 2. Check task status
-        task = task_manager.get_task_status(document_id)
-        print(f"Task in task manager: {task is not None}")
-        
-        if task:
-            print(f"  Task status: {task.task_status}")
-            print(f"  Current stage: {task.current_stage}")
-            print(f"  Can pause: {task.can_pause}")
-            print(f"  Can resume: {task.can_resume}")
-            print(f"  Can cancel: {task.can_cancel}")
-        
-    except Exception as e:
-        print(f"Error testing document: {str(e)}")
+    print("🔍 PDF Processing Diagnostic Tool")
+    print("=" * 50)
+    
+    # Test 1: PDF file basics
+    if not test_pdf_file(pdf_path):
+        print("\n❌ PDF file test failed - cannot proceed")
+        return
+    
+    # Test 2: Magic PDF imports
+    if not test_magic_pdf_imports():
+        print("\n❌ Magic PDF import test failed - check installation")
+        return
+    
+    # Test 3: MinerU ingester
+    if not test_mineru_ingester(pdf_path):
+        print("\n❌ MinerU ingester test failed")
+        return
+    
+    print("\n✅ All tests passed! PDF processing should work.")
 
 if __name__ == "__main__":
-    import sys
-    
-    document_id = None
-    if len(sys.argv) > 1:
-        document_id = sys.argv[1]
-        print(f"Focusing on document: {document_id}")
-    
-    diagnose_document_registration(document_id)
-    
-    if document_id:
-        test_specific_document(document_id)
+    main()

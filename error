@@ -1,0 +1,98 @@
+INFO - RAPTOR tree building completed for document test_doc_2025-06-05 18:26:38.151636 in 48.08s
+2025-06-05 18:34:16 2025-06-05 13:04:16,657 - celery.worker.strategy - INFO - Task services.celery.tasks.document_tasks.store_vectors_task[18b78443-9208-4c2e-bdc4-a590cc9c30eb] received
+2025-06-05 18:34:16 2025-06-05 13:04:16,658 - services.celery.tasks.document_tasks - INFO - Starting vector storage for test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:16 2025-06-05 13:04:16,672 - db.document_store.repository - INFO - Loaded document registry from document_store/registry.json
+2025-06-05 18:34:16 2025-06-05 13:04:16,672 - services.celery.tasks.document_tasks - INFO - Retrieved document test_doc_2025-06-05 18:26:38.151636 from repository
+2025-06-05 18:34:16 2025-06-05 13:04:16,672 - services.celery.tasks.document_tasks - INFO - Found file using container predefined path: /app/document_store/test_doc_2025-06-05 18:26:38.151636/original.pdf
+2025-06-05 18:34:16 2025-06-05 13:04:16,672 - services.celery.tasks.document_tasks - INFO - Resolved file size: 4686220 bytes
+2025-06-05 18:34:16 2025-06-05 13:04:16,672 - services.celery.tasks.document_tasks - INFO - Successfully created processing context for test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:16 2025-06-05 13:04:16,679 - db.document_store.document_tasks_repository - INFO - Updated task status to FAILURE for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:16 2025-06-05 13:04:16,679 - services.celery.tasks.document_tasks - ERROR - Task f2bfae87-ae0d-4e70-8207-2ba8912be106 failed for document test_doc_2025-06-05 18:26:38.151636: Object of type DataFrame is not JSON serializable
+2025-06-05 18:34:16 2025-06-05 13:04:16,680 - celery.app.trace - ERROR - Task services.celery.tasks.document_tasks.build_tree_task[f2bfae87-ae0d-4e70-8207-2ba8912be106] raised unexpected: EncodeError(TypeError('Object of type DataFrame is not JSON serializable'))
+2025-06-05 18:34:16 Traceback (most recent call last):
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/serialization.py", line 41, in _reraise_errors
+2025-06-05 18:34:16     yield
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/serialization.py", line 220, in dumps
+2025-06-05 18:34:16     payload = encoder(data)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/utils/json.py", line 63, in dumps
+2025-06-05 18:34:16     return _dumps(s, cls=cls, **dict(default_kwargs, **kwargs))
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/__init__.py", line 238, in dumps
+2025-06-05 18:34:16     **kw).encode(obj)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/encoder.py", line 199, in encode
+2025-06-05 18:34:16     chunks = self.iterencode(o, _one_shot=True)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/encoder.py", line 257, in iterencode
+2025-06-05 18:34:16     return _iterencode(o, 0)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/utils/json.py", line 47, in default
+2025-06-05 18:34:16     return super().default(o)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/encoder.py", line 179, in default
+2025-06-05 18:34:16     raise TypeError(f'Object of type {o.__class__.__name__} '
+2025-06-05 18:34:16 TypeError: Object of type DataFrame is not JSON serializable
+2025-06-05 18:34:16 
+2025-06-05 18:34:16 During handling of the above exception, another exception occurred:
+2025-06-05 18:34:16 
+2025-06-05 18:34:16 Traceback (most recent call last):
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/celery/app/trace.py", line 520, in trace_task
+2025-06-05 18:34:16     task.backend.mark_as_done(
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/celery/backends/base.py", line 157, in mark_as_done
+2025-06-05 18:34:16     self.store_result(task_id, result, state, request=request)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/celery/backends/base.py", line 526, in store_result
+2025-06-05 18:34:16     self._store_result(task_id, result, state, traceback,
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/celery/backends/base.py", line 981, in _store_result
+2025-06-05 18:34:16     self._set_with_state(self.get_key_for_task(task_id), self.encode(meta), state)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/celery/backends/base.py", line 413, in encode
+2025-06-05 18:34:16     _, _, payload = self._encode(data)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/celery/backends/base.py", line 417, in _encode
+2025-06-05 18:34:16     return dumps(data, serializer=self.serializer)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/serialization.py", line 219, in dumps
+2025-06-05 18:34:16     with _reraise_errors(EncodeError):
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/contextlib.py", line 153, in __exit__
+2025-06-05 18:34:16     self.gen.throw(typ, value, traceback)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/serialization.py", line 45, in _reraise_errors
+2025-06-05 18:34:16     reraise(wrapper, wrapper(exc), sys.exc_info()[2])
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/exceptions.py", line 34, in reraise
+2025-06-05 18:34:16     raise value.with_traceback(tb)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/serialization.py", line 41, in _reraise_errors
+2025-06-05 18:34:16     yield
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/serialization.py", line 220, in dumps
+2025-06-05 18:34:16     payload = encoder(data)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/utils/json.py", line 63, in dumps
+2025-06-05 18:34:16     return _dumps(s, cls=cls, **dict(default_kwargs, **kwargs))
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/__init__.py", line 238, in dumps
+2025-06-05 18:34:16     **kw).encode(obj)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/encoder.py", line 199, in encode
+2025-06-05 18:34:16     chunks = self.iterencode(o, _one_shot=True)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/encoder.py", line 257, in iterencode
+2025-06-05 18:34:16     return _iterencode(o, 0)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/site-packages/kombu/utils/json.py", line 47, in default
+2025-06-05 18:34:16     return super().default(o)
+2025-06-05 18:34:16   File "/usr/local/lib/python3.10/json/encoder.py", line 179, in default
+2025-06-05 18:34:16     raise TypeError(f'Object of type {o.__class__.__name__} '
+2025-06-05 18:34:16 kombu.exceptions.EncodeError: Object of type DataFrame is not JSON serializable
+2025-06-05 18:34:16 2025-06-05 13:04:16,707 - db.vector_store.milvus_client - INFO - Connected to Milvus server at standalone:19530
+2025-06-05 18:34:16 2025-06-05 13:04:16,708 - db.vector_store.milvus_client - INFO - Loading collection document_store
+2025-06-05 18:34:16 2025-06-05 13:04:16,713 - db.vector_store.milvus_client - INFO - Collection document_store loaded
+2025-06-05 18:34:16 2025-06-05 13:04:16,713 - db.vector_store.adapter - INFO - Initialized vector store client for collection: document_store
+2025-06-05 18:34:16 2025-06-05 13:04:16,755 - services.document.stage_processors - INFO - Starting vector storage for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:16 2025-06-05 13:04:16,767 - db.vector_store.adapter - INFO - Adding 86 entities to vector store for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:16 2025-06-05 13:04:16,775 [ERROR][handler]: RPC error: [has_partition], <MilvusException: (code=65535, message=Invalid partition name: p_test_doc_2025-06-05 18:26:38.151636. Partition name can only contain numbers, letters and underscores.)>, <Time:{'RPC start': '2025-06-05 13:04:16.770518', 'RPC error': '2025-06-05 13:04:16.775191'}> (decorators.py:140)
+2025-06-05 18:34:16 2025-06-05 13:04:16,775 - db.vector_store.milvus_client - ERROR - Error ensuring partition exists: <MilvusException: (code=65535, message=Invalid partition name: p_test_doc_2025-06-05 18:26:38.151636. Partition name can only contain numbers, letters and underscores.)>
+2025-06-05 18:34:16 2025-06-05 13:04:16,775 - db.vector_store.milvus_client - WARNING - Continuing without partitioning
+2025-06-05 18:34:16 2025-06-05 13:04:16,775 - db.vector_store.milvus_client - INFO - First entity embedding type: <class 'list'>, dimension: 3072
+2025-06-05 18:34:16 2025-06-05 13:04:16,882 - db.vector_store.milvus_client - INFO - Inserted batch of 86 entities (86/86)
+2025-06-05 18:34:19 2025-06-05 13:04:19,408 - db.vector_store.milvus_client - INFO - Successfully inserted 86 entities
+2025-06-05 18:34:19 2025-06-05 13:04:19,409 - db.vector_store.adapter - INFO - Successfully added 86 chunks for document test_doc_2025-06-05 18:26:38.151636 (skipped 0)
+2025-06-05 18:34:19 2025-06-05 13:04:19,420 [ERROR][handler]: RPC error: [has_partition], <MilvusException: (code=65535, message=Invalid partition name: p_test_doc_2025-06-05 18:26:38.151636. Partition name can only contain numbers, letters and underscores.)>, <Time:{'RPC start': '2025-06-05 13:04:19.419374', 'RPC error': '2025-06-05 13:04:19.420305'}> (decorators.py:140)
+2025-06-05 18:34:19 2025-06-05 13:04:19,420 - db.vector_store.milvus_client - ERROR - Error ensuring partition exists: <MilvusException: (code=65535, message=Invalid partition name: p_test_doc_2025-06-05 18:26:38.151636. Partition name can only contain numbers, letters and underscores.)>
+2025-06-05 18:34:19 2025-06-05 13:04:19,420 - db.vector_store.milvus_client - WARNING - Continuing without partitioning
+2025-06-05 18:34:19 2025-06-05 13:04:19,420 - db.vector_store.milvus_client - INFO - First entity embedding type: <class 'list'>, dimension: 3072
+2025-06-05 18:34:19 2025-06-05 13:04:19,449 - db.vector_store.milvus_client - INFO - Inserted batch of 28 entities (28/28)
+2025-06-05 18:34:27 2025-06-05 13:04:27,134 - db.vector_store.milvus_client - INFO - Successfully inserted 28 entities
+2025-06-05 18:34:27 2025-06-05 13:04:27,151 - services.document.processing_state_manager - INFO - Saved vector_storage data (storage_result) for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:27 2025-06-05 13:04:27,180 - services.document.processing_state_manager - INFO - Marked stage 'vector_storage' as complete for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:27 2025-06-05 13:04:27,180 - services.document.stage_processors - INFO - Vector storage completed for document test_doc_2025-06-05 18:26:38.151636 in 10.46s
+2025-06-05 18:34:27 2025-06-05 13:04:27,198 - db.document_store.document_tasks_repository - INFO - Updated task status to SUCCESS for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:27 2025-06-05 13:04:27,204 - services.celery.tasks.document_tasks - INFO - Task 18b78443-9208-4c2e-bdc4-a590cc9c30eb succeeded for document test_doc_2025-06-05 18:26:38.151636
+2025-06-05 18:34:27 2025-06-05 13:04:27,204 - celery.app.trace - INFO - Task services.celery.tasks.document_tasks.store_vectors_task[18b78443-9208-4c2e-bdc4-a590cc9c30eb] succeeded in 10.547521754000627s: {'status': 'success', 'stage': 'vector_storage', 'workflow_complete': True, 'chunks_count': 86, 'tree_nodes_count': 28, 'processing_time': 10.456239223480225}
+
+
+document_id=='test_doc_2025-06-05 18:26:38.151636'

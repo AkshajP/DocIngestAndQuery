@@ -108,6 +108,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+    command: /app/startup.sh worker
     container_name: docrag-worker
     restart: always
     dns:
@@ -136,17 +137,26 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - REDIS_URL=redis://redis:6379/0
+      - OMP_NUM_THREADS=2
+      - MKL_NUM_THREADS=2
+      - NUMEXPR_NUM_THREADS=2
+      - OPENBLAS_NUM_THREADS=2
+      - TORCH_NUM_THREADS=2
+      - PYTHONUNBUFFERED=1
+      - TOKENIZERS_PARALLELISM=false
+      # Disable multiprocessing for MinerU in container
+      - MINERU_DISABLE_MULTIPROCESSING=1
     depends_on:
       - postgres
       - standalone
       - redis
     volumes:
       - ./document_store:/app/document_store:rw
-      - model_cache:/root/.cache
+      - model_cache:/root/.cache/huggingface
       - pip_cache:/root/.cache/pip
     networks:
       - app-network
-    command: python worker.py
+
 
   # Add backend service
   # backend:

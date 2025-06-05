@@ -8,12 +8,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     git \
     curl \
+    wget \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    libpq-dev \  
+    libpq-dev \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file
+# Copy requirements file first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
@@ -30,11 +32,17 @@ RUN pip install ".[full]" --extra-index-url https://wheels.myhloli.com && \
 # Return to app directory
 WORKDIR /app
 
-# Download the model script (but don't run it during build)
+# Download the model download script
 RUN curl -o download_models_hf.py https://raw.githubusercontent.com/opendatalab/MinerU/release-1.2.2/scripts/download_models_hf.py
 
-# Clean up the repository
+# Clean up the MinerU repository (keep only what we need)
 RUN rm -rf MinerU
+
+# Create necessary directories for MinerU
+RUN mkdir -p /root/.cache/huggingface \
+    && mkdir -p /app/models \
+    && mkdir -p /tmp/magic_pdf_output \
+    && mkdir -p /tmp/magic_pdf_data
 
 # Copy application code
 COPY . .
@@ -42,83 +50,148 @@ COPY . .
 # Create document store directory
 RUN mkdir -p document_store
 
-# Create cache directory
-RUN mkdir -p /root/.cache
+# Set environment variables for model download
+ENV HF_HOME=/root/.cache/huggingface
+ENV HF_HUB_DISABLE_TELEMETRY=1
+ENV PYTHONUNBUFFERED=1
 
-# Create startup script that downloads models and updates config
+# Download MinerU models during build
+RUN echo "📥 Starting MinerU models download..." && \
+    python download_models_hf.py && \
+    echo "✅ MinerU models download completed!" && \
+    ls -la /root/magic-pdf.json && \
+    echo "📦 Model files:" && \
+    find /root/.cache/huggingface -name "*.pt" -o -name "*.pth" | head -10
+
+# Create optimized startup script
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
+echo "🚀 Starting DocRAG Backend Application"\n\
+\n\
 # Function to update config.json with environment variables\n\
-update_config() {\n\
-    echo "Updating config.json with environment variables..."\n\
-    \n\
-    # Update vector_db host and port\n\
-    if [ ! -z "$DOCRAG_VECTOR_DB_HOST" ]; then\n\
+update_app_config() {\n\
+    if [ -f "config.json" ] && [ ! -z "$DOCRAG_VECTOR_DB_HOST" ]; then\n\
+        echo "🔧 Updating application config with environment variables..."\n\
         python3 -c "\n\
 import json\n\
 import os\n\
-with open('"'"'config.json'"'"', '"'"'r'"'"') as f:\n\
-    config = json.load(f)\n\
-config['"'"'vector_db'"'"']['"'"'host'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_HOST'"'"', '"'"'localhost'"'"')\n\
-config['"'"'vector_db'"'"']['"'"'port'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_PORT'"'"', '"'"'19530'"'"')\n\
-with open('"'"'config.json'"'"', '"'"'w'"'"') as f:\n\
-    json.dump(config, f, indent=2)\n\
-host = config['"'"'vector_db'"'"']['"'"'host'"'"']\n\
-port = config['"'"'vector_db'"'"']['"'"'port'"'"']\n\
-print('"'"'Updated vector_db config: host='"'"' + host + '"'"', port='"'"' + port)\n\
+try:\n\
+    with open('"'"'config.json'"'"', '"'"'r'"'"') as f:\n\
+        config = json.load(f)\n\
+    config['"'"'vector_db'"'"']['"'"'host'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_HOST'"'"', '"'"'localhost'"'"')\n\
+    config['"'"'vector_db'"'"']['"'"'port'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_PORT'"'"', '"'"'19530'"'"')\n\
+    with open('"'"'config.json'"'"', '"'"'w'"'"') as f:\n\
+        json.dump(config, f, indent=2)\n\
+    print(f'"'"'✅ Updated vector_db: {config[\"vector_db\"][\"host\"]}:{config[\"vector_db\"][\"port\"]}'"'"')\n\
+except Exception as e:\n\
+    print(f'"'"'⚠️  Config update failed: {e}'"'"')\n\
 "\n\
     fi\n\
 }\n\
 \n\
-# Function to download models with retry logic\n\
-download_models() {\n\
-    local max_retries=3\n\
-    local retry_delay=30\n\
+# Verify MinerU setup\n\
+verify_mineru() {\n\
+    echo "🔍 Verifying MinerU setup..."\n\
     \n\
-    for ((i=1; i<=max_retries; i++)); do\n\
-        echo "Attempt $i of $max_retries: Downloading models..."\n\
-        if timeout 1800 python download_models_hf.py; then\n\
-            echo "Models downloaded successfully!"\n\
-            touch /root/.cache/models_downloaded\n\
-            return 0\n\
-        else\n\
-            echo "Download attempt $i failed"\n\
-            if [ $i -lt $max_retries ]; then\n\
-                echo "Retrying in $retry_delay seconds..."\n\
-                sleep $retry_delay\n\
-            fi\n\
-        fi\n\
-    done\n\
+    if [ ! -f "/root/magic-pdf.json" ]; then\n\
+        echo "❌ ERROR: /root/magic-pdf.json not found!"\n\
+        echo "🔄 Attempting to recreate it..."\n\
+        python download_models_hf.py || {\n\
+            echo "❌ Failed to download models"\n\
+            exit 1\n\
+        }\n\
+    fi\n\
     \n\
-    echo "Warning: Failed to download models after $max_retries attempts"\n\
-    echo "Application will start but may not function properly"\n\
-    return 1\n\
+    echo "✅ MinerU configuration verified"\n\
+    \n\
+    # Check if critical model files exist\n\
+    local model_dir="/root/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0"\n\
+    if [ ! -d "$model_dir" ]; then\n\
+        echo "⚠️  Warning: MinerU models directory not found at $model_dir"\n\
+        echo "🔄 Re-downloading models..."\n\
+        python download_models_hf.py\n\
+    else\n\
+        echo "✅ MinerU models directory found"\n\
+    fi\n\
 }\n\
 \n\
-# Update configuration with environment variables\n\
-update_config\n\
+# Test MinerU functionality\n\
+test_mineru() {\n\
+    echo "🧪 Testing MinerU functionality..."\n\
+    python3 -c "\n\
+try:\n\
+    from magic_pdf.libs.config_reader import read_config\n\
+    config = read_config()\n\
+    print('"'"'✅ MinerU config read successfully'"'"')\n\
+    \n\
+    from magic_pdf.data.dataset import PymuDocDataset\n\
+    print('"'"'✅ MinerU components import successfully'"'"')\n\
+    \n\
+except Exception as e:\n\
+    print(f'"'"'❌ MinerU test failed: {e}'"'"')\n\
+    exit(1)\n\
+" || {\n\
+        echo "❌ MinerU functionality test failed"\n\
+        exit 1\n\
+    }\n\
+    \n\
+    echo "✅ MinerU is ready"\n\
+}\n\
 \n\
-# Check if models are already downloaded\n\
-if [ ! -f "/root/.cache/models_downloaded" ]; then\n\
-    echo "Models not found. Downloading on first startup..."\n\
-    download_models\n\
+# Main startup sequence\n\
+echo "📋 Running startup checks..."\n\
+\n\
+# Update application configuration\n\
+update_app_config\n\
+\n\
+# Verify and setup MinerU\n\
+verify_mineru\n\
+\n\
+# Test MinerU functionality\n\
+test_mineru\n\
+\n\
+echo "🌟 All checks passed! Starting application..."\n\
+\n\
+# Start the application based on the command\n\
+if [ "$1" = "worker" ]; then\n\
+    echo "🔄 Starting Celery worker..."\n\
+    exec python worker.py\n\
 else\n\
-    echo "Models already downloaded, skipping download"\n\
-fi\n\
-\n\
-# Start the application\n\
-echo "Starting application..."\n\
-exec uvicorn main:app --host 0.0.0.0 --port 9000' > /app/startup.sh
+    echo "🌐 Starting FastAPI/Uvicorn server..."\n\
+    exec uvicorn main:app --host 0.0.0.0 --port 9000 --reload\n\
+fi' > /app/startup.sh
 
 # Make startup script executable
 RUN chmod +x /app/startup.sh
+
+# Create a quick health check script
+RUN echo '#!/usr/bin/env python3\n\
+import requests\n\
+import sys\n\
+try:\n\
+    response = requests.get("http://localhost:9000/health", timeout=5)\n\
+    if response.status_code == 200:\n\
+        print("✅ Health check passed")\n\
+        sys.exit(0)\n\
+    else:\n\
+        print(f"❌ Health check failed: {response.status_code}")\n\
+        sys.exit(1)\n\
+except Exception as e:\n\
+    print(f"❌ Health check error: {e}")\n\
+    sys.exit(1)\n\
+' > /app/health_check.py && chmod +x /app/health_check.py
 
 # Expose the port
 EXPOSE 9000
 
 # Set environment variables
 ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 
-# Use startup script instead of direct uvicorn command
+# Use startup script as default command
 CMD ["/app/startup.sh"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python /app/health_check.py || exit 1
