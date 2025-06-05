@@ -3,6 +3,7 @@ import json
 import logging
 from typing import Dict, List, Optional, Any, Union
 from pydantic import BaseModel, Field, validator, model_validator
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,18 @@ class OllamaConfig(BaseModel):
     embed_model: str = "llama3.2"
     temperature: float = 0.1
     max_tokens: int = 2000
+
+@dataclass
+class CeleryConfig:
+    """Celery configuration settings"""
+    broker_url: str = "redis://localhost:6379/0"
+    result_backend: str = "redis://localhost:6379/1"
+    task_always_eager: bool = False  # Set to True for synchronous testing
+    worker_concurrency: int = 3
+    max_tasks_per_child: int = 1000
+    task_time_limit: int = 3600  # 1 hour max per task
+    task_soft_time_limit: int = 3000  # 50 minutes soft limit
+
 
 
 class StorageConfig(BaseModel):
@@ -90,6 +103,25 @@ class AppConfig(BaseModel):
             logger.error(f"Error loading configuration from {file_path}: {str(e)}")
             logger.warning("Falling back to default configuration")
             return cls()
+    
+    @property
+    def celery(self) -> CeleryConfig:
+        """Get Celery configuration"""
+        if not hasattr(self, '_celery_config'):
+            self._celery_config = self._load_celery_config()
+        return self._celery_config
+
+    def _load_celery_config(self) -> CeleryConfig:
+        """Load Celery configuration from environment variables"""
+        return CeleryConfig(
+            broker_url=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
+            result_backend=os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1"),
+            task_always_eager=os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true",
+            worker_concurrency=int(os.getenv("CELERY_WORKER_CONCURRENCY", "3")),
+            max_tasks_per_child=int(os.getenv("CELERY_MAX_TASKS_PER_CHILD", "1000")),
+            task_time_limit=int(os.getenv("CELERY_TASK_TIME_LIMIT", "3600")),
+            task_soft_time_limit=int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT", "3000")),
+        )
     
     def to_json(self, file_path: str) -> None:
         """Save configuration to JSON file"""
