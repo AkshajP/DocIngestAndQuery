@@ -46,7 +46,7 @@ def example_document_processing():
         # Start processing
         result = upload_document_with_celery(
             file_path=test_file,
-            document_id=f"test_doc_{datetime.now()}",
+            document_id=f"test_doc_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             case_id="test_case",
             metadata={"source": "example_script"}
         )

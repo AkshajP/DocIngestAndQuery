@@ -551,6 +551,13 @@ def build_tree_task(self, document_id: str):
         # Execute tree building with control checks
         result = controlled_processor.execute_with_checkpoints(state_manager, context)
         
+        if result.get("status") == "success" and "tree_data" in result:
+            # Simple fix: convert any DataFrames in tree_data
+            tree_data = result["tree_data"]
+            for level_key, level_data in tree_data.items():
+                if "summaries_df" in level_data and hasattr(level_data["summaries_df"], 'to_dict'):
+                    level_data["summaries_df"] = level_data["summaries_df"].to_dict('records')
+        
         # Handle control signals
         if result["status"] == "cancelled":
             return result

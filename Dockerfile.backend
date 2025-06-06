@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.4
+
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -32,9 +34,6 @@ RUN pip install ".[full]" --extra-index-url https://wheels.myhloli.com && \
 # Return to app directory
 WORKDIR /app
 
-# Download the model download script
-RUN curl -o download_models_hf.py https://raw.githubusercontent.com/opendatalab/MinerU/release-1.2.2/scripts/download_models_hf.py
-
 # Clean up the MinerU repository (keep only what we need)
 RUN rm -rf MinerU
 
@@ -44,24 +43,25 @@ RUN mkdir -p /root/.cache/huggingface \
     && mkdir -p /tmp/magic_pdf_output \
     && mkdir -p /tmp/magic_pdf_data
 
-# Copy application code
-COPY . .
-
-# Create document store directory
-RUN mkdir -p document_store
-
 # Set environment variables for model download
 ENV HF_HOME=/root/.cache/huggingface
 ENV HF_HUB_DISABLE_TELEMETRY=1
 ENV PYTHONUNBUFFERED=1
 
-# Download MinerU models during build
-RUN echo "📥 Starting MinerU models download..." && \
+# Download the model download script
+COPY download_models_hf.py .
+
+# Download MinerU models BEFORE copying application code
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    echo "📥 Starting MinerU models download..." && \
     python download_models_hf.py && \
-    echo "✅ MinerU models download completed!" && \
-    ls -la /root/magic-pdf.json && \
-    echo "📦 Model files:" && \
-    find /root/.cache/huggingface -name "*.pt" -o -name "*.pth" | head -10
+    echo "✅ MinerU models download completed!"
+
+# NOW copy application code (after expensive operations)
+COPY . .
+
+# Create document store directory
+RUN mkdir -p document_store
 
 # Create optimized startup script
 RUN echo '#!/bin/bash\n\

@@ -88,6 +88,17 @@ def upload_document(
             "error": str(e),
             "processing_time": 0
         }
+        
+def sanitize_document_id(document_id: str) -> str:
+    """Sanitize document ID for Milvus partition compatibility"""
+    import re
+    # Replace invalid characters with underscores
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', document_id)
+    # Ensure it doesn't start with a number
+    if sanitized and sanitized[0].isdigit():
+        sanitized = f"doc_{sanitized}"
+    return sanitized
+
 
 def upload_document_with_celery(
     file_path: str,
@@ -101,7 +112,9 @@ def upload_document_with_celery(
     config = get_config()
     
     logger.info(f"Starting Celery upload for document {document_id}")
-    
+    # Document ID Sanitisation for validity in Milvus
+    document_id = sanitize_document_id(document_id)
+    logger.info(f"Document id sanitised to {document_id}")
     try:
         # STEP 1: Initialize repositories and services FIRST
         doc_repository = DocumentMetadataRepository()
