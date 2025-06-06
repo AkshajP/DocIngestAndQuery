@@ -661,7 +661,7 @@ class Raptor:
         
         return {
             "clusters": cluster_labels.tolist(),
-            "summaries_df": summaries_df.to_dict('records'),
+            "summaries_df": summaries_df,
             "n_clusters": n_clusters
         }
     

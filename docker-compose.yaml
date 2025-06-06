@@ -151,9 +151,15 @@ services:
       - standalone
       - redis
     volumes:
+      # Document storage (read-write)
       - ./document_store:/app/document_store:rw
-      - model_cache:/root/.cache/huggingface
-      - pip_cache:/root/.cache/pip
+      # BIND MOUNT approach - requires setup script to create directories
+      - ./volumes/huggingface_models:/root/.cache/huggingface:rw
+      - ./volumes/paddleocr_models:/root/.paddleocr:rw
+      # Optional: Pip cache for faster rebuilds
+      - pip_cache:/root/.cache/pip:rw
+      # Optional: MinerU temp directory
+      - mineru_temp:/tmp/magic_pdf_output:rw
     networks:
       - app-network
 
@@ -251,11 +257,12 @@ volumes:
     driver: local
   document_store:
     driver: local
-  model_cache:
-    driver: local
   pip_cache:
     driver: local
   redis_data:
+    driver: local
+  # Optional: MinerU temp directory for better performance
+  mineru_temp:
     driver: local
 
 networks:

@@ -21,14 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements.txt
 
 # Clone and install MinerU
 RUN git clone -b release-1.2.2 https://github.com/opendatalab/MinerU.git
 
 # Install MinerU and its dependencies
 WORKDIR /app/MinerU
-RUN pip install ".[full]" --extra-index-url https://wheels.myhloli.com && \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ".[full]" --extra-index-url https://wheels.myhloli.com && \
     pip install huggingface_hub
 
 # Return to app directory
@@ -48,139 +50,19 @@ ENV HF_HOME=/root/.cache/huggingface
 ENV HF_HUB_DISABLE_TELEMETRY=1
 ENV PYTHONUNBUFFERED=1
 
-# Download the model download script
+# Copy scripts BEFORE copying all application code (better caching)
+COPY ./scripts/startup.sh .
+COPY ./scripts/debug_models.sh .
 COPY download_models_hf.py .
 
-# Download MinerU models BEFORE copying application code
-RUN --mount=type=cache,target=/root/.cache/huggingface \
-    echo "📥 Starting MinerU models download..." && \
-    python download_models_hf.py && \
-    echo "✅ MinerU models download completed!"
+# Make scripts executable
+RUN chmod +x startup.sh debug_models.sh 
 
-# NOW copy application code (after expensive operations)
+# Copy application code
 COPY . .
 
 # Create document store directory
 RUN mkdir -p document_store
-
-# Create optimized startup script
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-echo "🚀 Starting DocRAG Backend Application"\n\
-\n\
-# Function to update config.json with environment variables\n\
-update_app_config() {\n\
-    if [ -f "config.json" ] && [ ! -z "$DOCRAG_VECTOR_DB_HOST" ]; then\n\
-        echo "🔧 Updating application config with environment variables..."\n\
-        python3 -c "\n\
-import json\n\
-import os\n\
-try:\n\
-    with open('"'"'config.json'"'"', '"'"'r'"'"') as f:\n\
-        config = json.load(f)\n\
-    config['"'"'vector_db'"'"']['"'"'host'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_HOST'"'"', '"'"'localhost'"'"')\n\
-    config['"'"'vector_db'"'"']['"'"'port'"'"'] = os.getenv('"'"'DOCRAG_VECTOR_DB_PORT'"'"', '"'"'19530'"'"')\n\
-    with open('"'"'config.json'"'"', '"'"'w'"'"') as f:\n\
-        json.dump(config, f, indent=2)\n\
-    print(f'"'"'✅ Updated vector_db: {config[\"vector_db\"][\"host\"]}:{config[\"vector_db\"][\"port\"]}'"'"')\n\
-except Exception as e:\n\
-    print(f'"'"'⚠️  Config update failed: {e}'"'"')\n\
-"\n\
-    fi\n\
-}\n\
-\n\
-# Verify MinerU setup\n\
-verify_mineru() {\n\
-    echo "🔍 Verifying MinerU setup..."\n\
-    \n\
-    if [ ! -f "/root/magic-pdf.json" ]; then\n\
-        echo "❌ ERROR: /root/magic-pdf.json not found!"\n\
-        echo "🔄 Attempting to recreate it..."\n\
-        python download_models_hf.py || {\n\
-            echo "❌ Failed to download models"\n\
-            exit 1\n\
-        }\n\
-    fi\n\
-    \n\
-    echo "✅ MinerU configuration verified"\n\
-    \n\
-    # Check if critical model files exist\n\
-    local model_dir="/root/.cache/huggingface/hub/models--opendatalab--PDF-Extract-Kit-1.0"\n\
-    if [ ! -d "$model_dir" ]; then\n\
-        echo "⚠️  Warning: MinerU models directory not found at $model_dir"\n\
-        echo "🔄 Re-downloading models..."\n\
-        python download_models_hf.py\n\
-    else\n\
-        echo "✅ MinerU models directory found"\n\
-    fi\n\
-}\n\
-\n\
-# Test MinerU functionality\n\
-test_mineru() {\n\
-    echo "🧪 Testing MinerU functionality..."\n\
-    python3 -c "\n\
-try:\n\
-    from magic_pdf.libs.config_reader import read_config\n\
-    config = read_config()\n\
-    print('"'"'✅ MinerU config read successfully'"'"')\n\
-    \n\
-    from magic_pdf.data.dataset import PymuDocDataset\n\
-    print('"'"'✅ MinerU components import successfully'"'"')\n\
-    \n\
-except Exception as e:\n\
-    print(f'"'"'❌ MinerU test failed: {e}'"'"')\n\
-    exit(1)\n\
-" || {\n\
-        echo "❌ MinerU functionality test failed"\n\
-        exit 1\n\
-    }\n\
-    \n\
-    echo "✅ MinerU is ready"\n\
-}\n\
-\n\
-# Main startup sequence\n\
-echo "📋 Running startup checks..."\n\
-\n\
-# Update application configuration\n\
-update_app_config\n\
-\n\
-# Verify and setup MinerU\n\
-verify_mineru\n\
-\n\
-# Test MinerU functionality\n\
-test_mineru\n\
-\n\
-echo "🌟 All checks passed! Starting application..."\n\
-\n\
-# Start the application based on the command\n\
-if [ "$1" = "worker" ]; then\n\
-    echo "🔄 Starting Celery worker..."\n\
-    exec python worker.py\n\
-else\n\
-    echo "🌐 Starting FastAPI/Uvicorn server..."\n\
-    exec uvicorn main:app --host 0.0.0.0 --port 9000 --reload\n\
-fi' > /app/startup.sh
-
-# Make startup script executable
-RUN chmod +x /app/startup.sh
-
-# Create a quick health check script
-RUN echo '#!/usr/bin/env python3\n\
-import requests\n\
-import sys\n\
-try:\n\
-    response = requests.get("http://localhost:9000/health", timeout=5)\n\
-    if response.status_code == 200:\n\
-        print("✅ Health check passed")\n\
-        sys.exit(0)\n\
-    else:\n\
-        print(f"❌ Health check failed: {response.status_code}")\n\
-        sys.exit(1)\n\
-except Exception as e:\n\
-    print(f"❌ Health check error: {e}")\n\
-    sys.exit(1)\n\
-' > /app/health_check.py && chmod +x /app/health_check.py
 
 # Expose the port
 EXPOSE 9000
@@ -192,6 +74,3 @@ ENV PYTHONUNBUFFERED=1
 # Use startup script as default command
 CMD ["/app/startup.sh"]
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python /app/health_check.py || exit 1
