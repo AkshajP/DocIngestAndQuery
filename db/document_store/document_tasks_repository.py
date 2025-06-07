@@ -310,7 +310,7 @@ class DocumentTasksRepository:
                     UPDATE document_tasks 
                     SET pause_requested = %s
                     WHERE document_id = %s AND task_status = %s
-                """, (pause, document_id, TaskStatus.STARTED.value))
+                """, (pause, document_id, TaskStatus.PAUSED.value))
                 
                 rows_affected = cursor.rowcount
                 conn.commit()
@@ -447,3 +447,77 @@ class DocumentTasksRepository:
             return json.dumps(data)
         # For other types, convert to dict
         return json.dumps({"data": str(data)})
+    
+    def update_current_stage(self, document_id: str, new_stage: str) -> bool:
+        """
+        Update the current stage for a document task.
+        
+        Args:
+            document_id: Document ID
+            new_stage: New processing stage
+            
+        Returns:
+            True if successful
+        """
+        with self._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE document_tasks 
+                    SET current_stage = %s
+                    WHERE document_id = %s
+                """, (new_stage, document_id))
+                
+                rows_affected = cursor.rowcount
+                conn.commit()
+                
+                if rows_affected > 0:
+                    logger.info(f"Updated current_stage to {new_stage} for document {document_id}")
+                    return True
+                else:
+                    logger.warning(f"No task found for document {document_id} when updating stage")
+                    return False
+
+    def mark_stage_completed(self, document_id: str, completed_stage: str, next_stage: str = None) -> bool:
+        """
+        Mark a stage as completed and optionally advance to next stage.
+        
+        Args:
+            document_id: Document ID
+            completed_stage: Stage that was completed
+            next_stage: Next stage to advance to (optional)
+            
+        Returns:
+            True if successful
+        """
+        with self._get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Update stage metadata to track completion
+                cursor.execute("""
+                    UPDATE document_tasks 
+                    SET stage_metadata = jsonb_set(
+                        COALESCE(stage_metadata, '{}'),
+                        '{completed_stages}',
+                        COALESCE(stage_metadata->'completed_stages', '[]') || %s::jsonb
+                    )
+                    WHERE document_id = %s
+                """, (f'["{completed_stage}"]', document_id))
+                
+                # Update current stage if next_stage provided
+                if next_stage:
+                    cursor.execute("""
+                        UPDATE document_tasks 
+                        SET current_stage = %s
+                        WHERE document_id = %s
+                    """, (next_stage, document_id))
+                
+                rows_affected = cursor.rowcount
+                conn.commit()
+                
+                if rows_affected > 0:
+                    logger.info(f"Marked stage {completed_stage} as completed for document {document_id}")
+                    if next_stage:
+                        logger.info(f"Advanced to stage {next_stage} for document {document_id}")
+                    return True
+                else:
+                    logger.warning(f"No task found for document {document_id} when marking stage completed")
+                    return False

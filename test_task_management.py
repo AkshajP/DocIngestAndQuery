@@ -30,7 +30,7 @@ def example_document_processing():
     print("=== Celery Document Processing Example ===")
     
     # Test document path - adjust this to your test file
-    test_file = '/Users/vikas/Downloads/layout-parser-paper.pdf'
+    test_file = '/Users/vikas/Downloads/Index Volume 18.pdf'
     
     if not os.path.exists(test_file):
         print(f"Please create a test file at {test_file} or update the path")
@@ -79,15 +79,15 @@ def example_document_processing():
                 
                 # Demonstrate pause after 20% progress
                 # if i == 3 and task.can_pause:
-                #     print("\n3. Demonstrating pause...")
-                #     pause_result = task_manager.pause_task(document_id)
-                #     print(f"  Pause result: {pause_result}")
+                    # print("\n3. Demonstrating pause...")
+                    # pause_result = task_manager.pause_task(document_id)
+                    # print(f"  Pause result: {pause_result}")
                     
-                #     time.sleep(3)
+                    # time.sleep(10)
                     
-                #     print("\n4. Demonstrating resume...")
-                #     resume_result = task_manager.resume_task(document_id, f"resume_{celery_task_id}")
-                #     print(f"  Resume result: {resume_result}")
+                    # print("\n4. Demonstrating resume...")
+                    # resume_result = task_manager.resume_task(document_id, f"resume_{celery_task_id}")
+                    # print(f"  Resume result: {resume_result}")
                 
                 # Check if completed
                 if task.task_status in ["SUCCESS", "FAILURE", "CANCELLED"]:

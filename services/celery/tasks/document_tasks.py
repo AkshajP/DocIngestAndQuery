@@ -257,6 +257,22 @@ class BaseDocumentTask(Task):
         except Exception as e:
             logger.error(f"Failed to initialize ProcessingStateManager for {document_id}: {str(e)}")
             raise ValueError(f"ProcessingStateManager initialization failed: {str(e)}")
+    
+    def _advance_to_next_stage(self, document_id: str, current_stage: str, next_stage: str) -> bool:
+        """Helper method to advance to next stage before chaining"""
+        try:
+            if self.task_state_manager:
+                success = self.task_state_manager.advance_stage(document_id, next_stage)
+                if success:
+                    logger.info(f"Advanced {document_id} from {current_stage} to {next_stage}")
+                    return True
+                else:
+                    logger.error(f"Failed to advance {document_id} from {current_stage} to {next_stage}")
+                    return False
+            return True  # If no task manager, don't block progression
+        except Exception as e:
+            logger.error(f"Error advancing stage for {document_id}: {str(e)}")
+            return False
   
 @celery_app.task(base=BaseDocumentTask, bind=True, name='services.celery.tasks.document_tasks.extract_document_task')
 def extract_document_task(self, document_id: str):
@@ -359,11 +375,16 @@ def extract_document_task(self, document_id: str):
         # Update progress
         update_task_progress(self.task_state_manager, document_id, "extraction", 90, "Extraction complete")
         
+        # ADVANCE TO NEXT STAGE BEFORE CHAINING
+        if not self._advance_to_next_stage(document_id, "extraction", "chunking"):
+            return {"status": "error", "error": "Failed to advance to chunking stage"}
+        
         # Chain to next task
         chunking_result = chunk_document_task.delay(document_id)
         
         # Update progress
-        update_task_progress(self.task_state_manager, document_id, "extraction", 100, "Chaining to chunking")
+        update_task_progress(self.task_state_manager, document_id, "chunking", 5, "Starting chunking")
+
         
         logger.info(f"Extraction completed successfully for {document_id}, chaining to {chunking_result.id}")
         
@@ -436,15 +457,18 @@ def chunk_document_task(self, document_id: str):
         elif result["status"] != "success":
             return result
         
-        # Update progress
         update_task_progress(self.task_state_manager, document_id, "chunking", 90, "Chunking complete")
+        
+        # ADVANCE TO NEXT STAGE BEFORE CHAINING
+        if not self._advance_to_next_stage(document_id, "chunking", "embedding"):
+            return {"status": "error", "error": "Failed to advance to embedding stage"}
         
         # Chain to next task
         embedding_result = embed_document_task.delay(document_id)
         
         # Update progress
-        update_task_progress(self.task_state_manager, document_id, "chunking", 100, "Chaining to embedding")
-        
+        update_task_progress(self.task_state_manager, document_id, "embedding", 5, "Starting embedding")
+
         return {
             "status": "success",
             "stage": "chunking",
@@ -504,12 +528,16 @@ def embed_document_task(self, document_id: str):
         # Update progress
         update_task_progress(self.task_state_manager, document_id, "embedding", 90, "Embedding complete")
         
+        # ADVANCE TO NEXT STAGE BEFORE CHAINING
+        if not self._advance_to_next_stage(document_id, "embedding", "tree_building"):
+            return {"status": "error", "error": "Failed to advance to tree_building stage"}
+        
         # Chain to next task
         tree_result = build_tree_task.delay(document_id)
         
         # Update progress
-        update_task_progress(self.task_state_manager, document_id, "embedding", 100, "Chaining to tree building")
-        
+        update_task_progress(self.task_state_manager, document_id, "tree_building", 5, "Starting tree building")
+
         return {
             "status": "success",
             "stage": "embedding",
@@ -569,12 +597,16 @@ def build_tree_task(self, document_id: str):
         # Update progress
         update_task_progress(self.task_state_manager, document_id, "tree_building", 90, "Tree building complete")
         
+        # ADVANCE TO NEXT STAGE BEFORE CHAINING
+        if not self._advance_to_next_stage(document_id, "tree_building", "vector_storage"):
+            return {"status": "error", "error": "Failed to advance to vector_storage stage"}
+        
         # Chain to final task
         storage_result = store_vectors_task.delay(document_id)
         
         # Update progress
-        update_task_progress(self.task_state_manager, document_id, "tree_building", 100, "Chaining to vector storage")
-        
+        update_task_progress(self.task_state_manager, document_id, "vector_storage", 5, "Starting vector storage")
+
         return {
             "status": "success",
             "stage": "tree_building",
@@ -634,16 +666,31 @@ def store_vectors_task(self, document_id: str):
         # Update progress
         update_task_progress(self.task_state_manager, document_id, "vector_storage", 90, "Vector storage complete")
         
-        # Mark entire workflow as complete
-        if self.task_state_manager:
-            self.task_state_manager.complete_task(document_id, success=True)
+        # Get state manager to properly mark workflow completion
+        try:
+            context = self._get_processing_context(document_id)
+            state_manager = self._get_state_manager(document_id, context)
+            
+            # Mark the vector storage stage as complete and workflow as finished
+            if not state_manager.mark_workflow_complete(self.request.id):
+                logger.warning(f"Failed to mark workflow complete for {document_id}, but task succeeded")
+            
+        except Exception as e:
+            logger.warning(f"Error in workflow completion for {document_id}: {str(e)}")
+            # Still mark as complete in task manager as fallback
+            if self.task_state_manager:
+                self.task_state_manager.advance_stage(document_id, "completed")
+                self.task_state_manager.complete_task(document_id, success=True)
+        
         
         # Update progress
-        update_task_progress(self.task_state_manager, document_id, "vector_storage", 100, "Document processing complete")
+        update_task_progress(self.task_state_manager, document_id, "completed", 100, "Document processing complete")
+        
+        logger.info(f"Document processing workflow completed successfully for {document_id}")
         
         return {
             "status": "success",
-            "stage": "vector_storage", 
+            "stage": "completed",
             "workflow_complete": True,
             **result
         }

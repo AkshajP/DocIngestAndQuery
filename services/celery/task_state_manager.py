@@ -286,22 +286,28 @@ class TaskStateManager:
                 logger.error(f"Task not found for document {document_id}")
                 return False
             
-            # Update the current stage in the task metadata
-            stage_metadata = task.stage_metadata.copy()
-            stage_metadata['current_stage'] = new_stage
-            stage_metadata['stage_advanced_at'] = datetime.now().isoformat()
+            # Update the current stage in the document_tasks table
+            success = self.tasks_repo.update_current_stage(document_id, new_stage)
             
-            # Update task with new stage - we'll need to add this method to the repository
-            # For now, use the checkpoint data field to track this
-            return self.update_progress(
-                document_id=document_id,
-                percent_complete=task.percent_complete,
-                checkpoint_data={
-                    **task.checkpoint_data,
-                    'current_stage': new_stage,
-                    'stage_metadata': stage_metadata
-                }
-            )
+            if success:
+                # Also update checkpoint data with stage advancement info
+                stage_metadata = task.stage_metadata.copy()
+                stage_metadata['current_stage'] = new_stage
+                stage_metadata['stage_advanced_at'] = datetime.now().isoformat()
+                
+                self.update_progress(
+                    document_id=document_id,
+                    percent_complete=task.percent_complete,
+                    checkpoint_data={
+                        **task.checkpoint_data,
+                        'current_stage': new_stage,
+                        'stage_metadata': stage_metadata
+                    }
+                )
+                
+                logger.info(f"Advanced document {document_id} to stage {new_stage}")
+            
+            return success
             
         except Exception as e:
             logger.error(f"Error advancing stage for document {document_id}: {str(e)}")

@@ -253,6 +253,20 @@ if ! verify_mineru; then
     exit 1
 fi
 
+echo "🔧 Configuring MinerU settings..."
+python3 -c "
+from download_models_hf import configure_magic_pdf_settings
+configure_magic_pdf_settings()
+"
+echo "set the following environment variables to change any configuration for magic-pdf:
+    - MINERU_DEVICE_MODE
+    - MINERU_LAYOUT_MODEL
+    - MINERU_TABLE_MODEL
+    - MINERU_TABLE_ENABLE
+    - MINERU_FORMULA_ENABLE
+    - MINERU_LLM_ENABLE
+    - OLLAMA_MODEL \n"
+
 echo "🌟 All checks passed! Starting application..."
 
 # Start the application based on the command

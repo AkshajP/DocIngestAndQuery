@@ -447,7 +447,7 @@ class ProcessingStateManager:
     def mark_stage_complete(self, stage: str, celery_task_id: Optional[str] = None) -> bool:
         """
         Mark a stage as completed and advance to next stage.
-        Enhanced with Celery task integration.
+        Enhanced with better Celery task integration and stage advancement.
         
         Args:
             stage: Stage to mark as complete
@@ -464,7 +464,6 @@ class ProcessingStateManager:
         # Try to acquire lock with longer timeout for critical operations
         if not self._acquire_state_lock(timeout_seconds=60):
             logger.error(f"Could not acquire lock for document {self.document_id}")
-            # Try to proceed without lock as fallback (but log the issue)
             logger.warning(f"Proceeding without lock for stage completion of {stage} in document {self.document_id}")
         
         try:
@@ -483,20 +482,41 @@ class ProcessingStateManager:
             completion_times[stage] = datetime.now().isoformat()
             self.processing_state["stage_completion_times"] = completion_times
             
-            # Advance to next stage
+            # Get next stage
             next_stage = self._get_next_stage(stage)
+            
+            # Update current stage in local state
             if next_stage:
                 self.processing_state["current_stage"] = next_stage
-                
-                # Update Celery task manager with stage advancement
-                if self.task_state_manager:
-                    self.task_state_manager.advance_stage(self.document_id, next_stage)
+            else:
+                # If no next stage, mark as completed
+                self.processing_state["current_stage"] = "completed"
             
             # Clear any error details for this stage
             if "stage_error_details" in self.processing_state and stage in self.processing_state["stage_error_details"]:
                 del self.processing_state["stage_error_details"][stage]
             
             success = self._save_processing_state()
+            
+            # IMPORTANT: Update Celery task manager with stage advancement
+            if success and self.task_state_manager:
+                target_stage = next_stage if next_stage else "completed"
+                try:
+                    # Mark the completed stage in the database
+                    self.task_state_manager.tasks_repo.mark_stage_completed(
+                        document_id=self.document_id,
+                        completed_stage=stage,
+                        next_stage=target_stage
+                    )
+                    
+                    # Advance to next stage
+                    self.task_state_manager.advance_stage(self.document_id, target_stage)
+                    
+                    logger.info(f"Updated task manager: completed {stage}, advanced to {target_stage}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to update task manager for stage completion: {str(e)}")
+                    # Don't fail the entire operation just because task manager update failed
             
             # Sync with document repository if available (without requiring lock)
             if success and self.doc_repository:
@@ -510,7 +530,8 @@ class ProcessingStateManager:
                     # Don't fail the stage completion just because repo sync failed
             
             if success:
-                logger.info(f"Marked stage '{stage}' as complete for document {self.document_id}")
+                target_stage = next_stage if next_stage else "completed"
+                logger.info(f"Marked stage '{stage}' as complete for document {self.document_id}, advanced to {target_stage}")
             
             return success
             
@@ -736,4 +757,76 @@ class ProcessingStateManager:
             return self._save_processing_state()
         except Exception as e:
             logger.error(f"Error cleaning up stage data for {self.document_id}: {str(e)}")
+            return False
+    
+    def mark_workflow_complete(self, celery_task_id: Optional[str] = None) -> bool:
+        """
+        Mark the entire workflow as completed.
+        
+        Args:
+            celery_task_id: Optional Celery task ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Mark the final completion stage
+            self.processing_state["current_stage"] = ProcessingStage.COMPLETED.value
+            self.processing_state["workflow_completed_at"] = datetime.now().isoformat()
+            
+            # Ensure all expected stages are marked as complete
+            expected_stages = [
+                ProcessingStage.UPLOAD.value,
+                ProcessingStage.EXTRACTION.value,
+                ProcessingStage.CHUNKING.value,
+                ProcessingStage.EMBEDDING.value,
+                ProcessingStage.TREE_BUILDING.value,
+                ProcessingStage.VECTOR_STORAGE.value
+            ]
+            
+            completed_stages = set(self.processing_state.get("completed_stages", []))
+            for stage in expected_stages:
+                if stage not in completed_stages:
+                    logger.warning(f"Stage {stage} not marked as complete, adding to completed stages")
+                    completed_stages.add(stage)
+            
+            self.processing_state["completed_stages"] = list(completed_stages)
+            
+            success = self._save_processing_state()
+            
+            # Update task state manager
+            if success and self.task_state_manager:
+                try:
+                    # Update current stage to completed
+                    self.task_state_manager.advance_stage(self.document_id, ProcessingStage.COMPLETED.value)
+                    
+                    # Mark task as successfully completed
+                    self.task_state_manager.complete_task(self.document_id, success=True)
+                    
+                    logger.info(f"Marked workflow complete in task manager for {self.document_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to update task manager for workflow completion: {str(e)}")
+            
+            # Update document repository
+            if success and self.doc_repository:
+                try:
+                    self.doc_repository.update_document(self.document_id, {
+                        "status": "processed",
+                        "processing_completed_at": datetime.now().isoformat(),
+                        "processing_state": self.processing_state
+                    })
+                    
+                    logger.info(f"Updated document repository for workflow completion: {self.document_id}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to update document repository: {str(e)}")
+            
+            if success:
+                logger.info(f"Workflow marked as complete for document {self.document_id}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error marking workflow complete for {self.document_id}: {str(e)}")
             return False
